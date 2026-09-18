@@ -17,8 +17,12 @@ WORKDIR /build
 # Copy all files needed for Go build, and no Rust files
 COPY *.go go.* *.yaml *.sh ./
 COPY pkg/signalmeow/. pkg/signalmeow/.
-COPY pkg/libsignalgo/* pkg/libsignalgo/
+# Only the Go files and header: `COPY dir/*` would also unpack subdirectories
+# (e.g. signalversion/) flat into libsignalgo, mixing two packages.
+COPY pkg/libsignalgo/*.go pkg/libsignalgo/libsignal-ffi.h pkg/libsignalgo/
+COPY pkg/libsignalgo/signalversion/. pkg/libsignalgo/signalversion/.
 COPY pkg/libsignalgo/resources/. pkg/libsignalgo/resources/.
+COPY pkg/album/. pkg/album/.
 COPY pkg/msgconv/. pkg/msgconv/.
 COPY pkg/signalid/. pkg/signalid/.
 COPY pkg/connector/. pkg/connector/.
