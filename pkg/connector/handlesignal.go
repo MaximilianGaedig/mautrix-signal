@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -36,7 +37,9 @@ import (
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 
+	"go.mau.fi/mautrix-signal/pkg/album"
 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
+	"go.mau.fi/mautrix-signal/pkg/msgconv"
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/events"
@@ -392,6 +395,11 @@ func (evt *Bv2ChatEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Porta
 	converted := evt.s.Main.MsgConv.ToMatrix(ctx, evt.s.Client, portal, evt.Info.Sender, intent, editMsg.GetDataMessage(), nil)
 	// TODO can anything other than the text be edited?
 	editPart := converted.Parts[len(converted.Parts)-1].ToEditPart(existing[len(existing)-1])
+	if editPart.Extra != nil {
+		// The converted data message has the edit's timestamp, keep the original album ID.
+		editPart.Extra = maps.Clone(editPart.Extra)
+		album.SetID(editPart.Extra, msgconv.AlbumID(evt.Info.Sender, editMsg.GetTargetSentTimestamp()))
+	}
 	prevID := editPart.Part.ID
 	// Clone the database message struct to avoid mutating the ID.
 	// The ID from the original struct is used for AddedParts (we specifically want the old ID for that)

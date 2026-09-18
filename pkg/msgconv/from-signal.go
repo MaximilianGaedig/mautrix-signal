@@ -40,6 +40,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
+	"go.mau.fi/mautrix-signal/pkg/album"
 	"go.mau.fi/mautrix-signal/pkg/msgconv/signalfmt"
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow"
@@ -126,9 +127,12 @@ func (mc *MessageConverter) ToMatrix(
 		cm.Parts = append(cm.Parts, mc.convertPollTerminateToMatrix(ctx, sender, dm.PollTerminate))
 		return cm
 	}
+	var attachmentParts []*bridgev2.ConvertedMessagePart
 	for i, att := range dm.GetAttachments() {
 		if att.GetContentType() != "text/x-signal-plain" || att.GetSize() > matrixTextMaxLength {
-			cm.Parts = append(cm.Parts, mc.convertAttachmentToMatrix(ctx, i, att, attMap))
+			part := mc.convertAttachmentToMatrix(ctx, i, att, attMap)
+			attachmentParts = append(attachmentParts, part)
+			cm.Parts = append(cm.Parts, part)
 		} else {
 			longBody, err := mc.downloadSignalLongText(ctx, att, attMap)
 			if err == nil {
@@ -138,6 +142,9 @@ func (mc *MessageConverter) ToMatrix(
 			}
 		}
 	}
+	// Mark multi-attachment messages so Matrix clients can group them. The
+	// caption (if any) stays a separate text part as before.
+	album.Tag(attachmentParts, AlbumID(sender, dm.GetTimestamp()))
 	for _, contact := range dm.GetContact() {
 		cm.Parts = append(cm.Parts, mc.convertContactToMatrix(ctx, contact, attMap))
 	}
@@ -191,6 +198,11 @@ func (mc *MessageConverter) ToMatrix(
 		}
 	}
 	return cm
+}
+
+// AlbumID returns the fi.mau.album ID for the attachments of the given message.
+func AlbumID(sender uuid.UUID, timestamp uint64) string {
+	return "signal:" + string(signalid.MakeMessageID(sender, timestamp))
 }
 
 func (mc *MessageConverter) ConvertDisappearingTimerChangeToMatrix(
