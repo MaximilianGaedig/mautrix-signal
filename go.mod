@@ -51,4 +51,4 @@ require (
 	maunium.net/go/mauflag v1.0.0 // indirect
 )
 
-replace maunium.net/go/mautrix => github.com/MaximilianGaedig/mautrix-go v0.31.1-0.20260920181525-ac9ad66d7a4c
+replace maunium.net/go/mautrix => github.com/MaximilianGaedig/mautrix-go 53d3193b347af7d69f7c9c53d26b06edc3d309ef
