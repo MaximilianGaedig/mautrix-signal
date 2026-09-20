@@ -34,7 +34,11 @@ import (
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/store"
 )
 
-var _ bridgev2.BackfillingNetworkAPI = (*SignalClient)(nil)
+var (
+	_ bridgev2.BackfillingNetworkAPI      = (*SignalClient)(nil)
+	_ bridgev2.BackfillCountingNetworkAPI = (*SignalClient)(nil)
+	_ bridgev2.ChatCountingNetworkAPI     = (*SignalClient)(nil)
+)
 
 func tryCastUUID(b []byte) uuid.UUID {
 	if len(b) == 16 {
@@ -204,4 +208,33 @@ func (s *SignalClient) FetchMessages(ctx context.Context, params bridgev2.FetchM
 			}
 		},
 	}, nil
+}
+
+// CountRemoteMessages says how many messages the chat has in the backup the bridge imports from.
+func (s *SignalClient) CountRemoteMessages(ctx context.Context, portal *bridgev2.Portal) (int, error) {
+	userID, groupID, err := signalid.ParsePortalID(portal.ID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse portal ID: %w", err)
+	}
+	var chat *store.BackupChat
+	if groupID != "" {
+		chat, err = s.Client.Store.BackupStore.GetBackupChatByGroupID(ctx, groupID)
+	} else {
+		chat, err = s.Client.Store.BackupStore.GetBackupChatByUserID(ctx, userID)
+	}
+	if err != nil {
+		return 0, err
+	} else if chat == nil {
+		return 0, fmt.Errorf("chat is not in the backup")
+	}
+	return chat.TotalMessages, nil
+}
+
+// CountRemoteChats says how many chats the backup the bridge imports from has.
+func (s *SignalClient) CountRemoteChats(ctx context.Context) (int, error) {
+	chats, err := s.Client.Store.BackupStore.GetBackupChats(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return len(chats), nil
 }
