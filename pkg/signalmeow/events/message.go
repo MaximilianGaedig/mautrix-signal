@@ -44,6 +44,9 @@ func (*LoggedOut) isSignalEvent()              {}
 type MessageInfo struct {
 	Sender uuid.UUID
 	ChatID string
+	// SourceDeviceID is the linked device that sent the envelope. RingRTC
+	// requires this separately from CallMessage.destinationDeviceId.
+	SourceDeviceID uint32
 
 	GroupRevision   uint32
 	ServerTimestamp uint64

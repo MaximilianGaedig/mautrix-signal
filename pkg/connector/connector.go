@@ -69,6 +69,7 @@ func (s *SignalConnector) Init(bridge *bridgev2.Bridge) {
 	s.MsgConv.DisappearViewOnce = s.Config.DisappearViewOnce
 	s.MsgConv.ExtEvPolls = s.Config.ExtEvPolls
 	bridge.Commands.(*commands.Processor).AddHandlers(CmdDiscardSenderKey)
+	s.registerCallEventHandlers()
 }
 
 func (s *SignalConnector) SetMaxFileSize(maxSize int64) {
@@ -119,6 +120,7 @@ func (s *SignalConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Use
 
 		queueEmptyWaiter: exsync.NewEvent(),
 	}
+	sc.callBridge.client = sc
 	if device != nil {
 		sc.Client = signalmeow.NewClient(
 			device,

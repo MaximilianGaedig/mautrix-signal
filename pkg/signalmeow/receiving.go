@@ -653,6 +653,7 @@ func (cli *Client) handleDecryptedResult(
 			info := events.MessageInfo{
 				Sender:          theirServiceID.UUID,
 				ChatID:          theirServiceID.String(),
+				SourceDeviceID:  envelope.GetSourceDeviceId(),
 				ServerTimestamp: envelope.GetServerTimestamp(),
 			}
 			// CallMessage doesn't have its own timestamp, use one from the envelope.

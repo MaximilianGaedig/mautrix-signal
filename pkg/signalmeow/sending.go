@@ -706,6 +706,8 @@ func (cli *Client) SendMessage(ctx context.Context, recipientID libsignalgo.Serv
 		*signalpb.Content_ReceiptMessage,
 		*signalpb.Content_DecryptionErrorMessage:
 		messageTimestamp = currentMessageTimestamp()
+	case *signalpb.Content_CallMessage:
+		messageTimestamp = currentMessageTimestamp()
 	case *signalpb.Content_StoryMessage:
 		// not yet supported
 	default:

@@ -43,6 +43,7 @@ type SignalConfig struct {
 	LocationFormat        string              `yaml:"location_format"`
 	DisappearViewOnce     bool                `yaml:"disappear_view_once"`
 	ExtEvPolls            bool                `yaml:"extev_polls"`
+	CallBridging          bool                `yaml:"call_bridging"`
 
 	displaynameTemplate *template.Template `yaml:"-"`
 }
@@ -105,6 +106,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "location_format")
 	helper.Copy(up.Bool, "disappear_view_once")
 	helper.Copy(up.Bool, "extev_polls")
+	helper.Copy(up.Bool, "call_bridging")
 }
 
 func (s *SignalConnector) GetConfig() (string, any, up.Upgrader) {

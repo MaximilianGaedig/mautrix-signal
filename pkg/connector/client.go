@@ -42,6 +42,7 @@ type SignalClient struct {
 
 	queueEmptyWaiter *exsync.Event
 	cancelChatSync   atomic.Pointer[context.CancelFunc]
+	callBridge       signalCallBridge
 }
 
 var (
@@ -90,6 +91,7 @@ func (s *SignalClient) LogoutRemote(ctx context.Context) {
 	if s.Client == nil {
 		return
 	}
+	s.callBridge.stop()
 	s.stopChatSync()
 	err := s.Client.Unlink(ctx)
 	if err != nil {
@@ -288,6 +290,7 @@ func (s *SignalClient) Disconnect() {
 	if s.Client == nil {
 		return
 	}
+	s.callBridge.stop()
 	s.stopChatSync()
 	err := s.Client.StopReceiveLoops()
 	if err != nil {

@@ -26,3 +26,5 @@ location_format: 'https://www.google.com/maps/place/%[1]s,%[2]s'
 disappear_view_once: false
 # Should polls be sent using unstable MSC3381 event types?
 extev_polls: false
+# Bridge Signal 1:1 audio calls to Matrix VoIP. This is experimental.
+call_bridging: false

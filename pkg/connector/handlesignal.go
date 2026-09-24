@@ -63,6 +63,10 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 		return s.handleSignalMessageRequestResponse(evt)
 	case *events.Call:
 		s.logCallSignal(evt)
+		if s.Main.Config.CallBridging {
+			s.handleSignalCall(evt)
+			return true
+		}
 		// Preserve the existing user-visible behavior: only offers and hangups
 		// become timeline notices. Answer, ICE, busy and opaque messages are
 		// read-only signalling observations for now.
