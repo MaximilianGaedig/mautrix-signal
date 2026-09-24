@@ -22,6 +22,7 @@ import (
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/srtp/v3"
 	"github.com/pion/stun/v4"
@@ -32,6 +33,10 @@ const (
 	OpusPayloadType = 102
 	VP8PayloadType  = 108
 	VP9PayloadType  = 109
+	CallerAudioSSRC = 1002
+	CallerVideoSSRC = 1003
+	CalleeAudioSSRC = 2002
+	CalleeVideoSSRC = 2003
 )
 
 type IncomingMediaConfig struct {
@@ -185,6 +190,72 @@ func (l *IncomingMediaLeg) AcceptRTP() (*RTPReader, uint32, error) {
 		return nil, 0, err
 	}
 	return &RTPReader{stream: stream}, ssrc, nil
+}
+
+// RTPReader opens the fixed RingRTC 1:1 stream identified by ssrc without
+// waiting for it to produce its first packet. RingRTC assigns 1002/1003 to
+// the caller's audio/video streams and 2002/2003 to the callee's streams.
+func (l *IncomingMediaLeg) RTPReader(ssrc uint32) (*RTPReader, error) {
+	l.lock.Lock()
+	session := l.SRTP
+	l.lock.Unlock()
+	if session == nil {
+		return nil, errors.New("RingRTC SRTP session is not connected")
+	}
+	stream, err := session.OpenReadStream(ssrc)
+	if err != nil {
+		return nil, err
+	}
+	return &RTPReader{stream: stream}, nil
+}
+
+func (l *IncomingMediaLeg) WriteRTCP(packets []rtcp.Packet) error {
+	l.lock.Lock()
+	session := l.SRTCP
+	l.lock.Unlock()
+	if session == nil {
+		return errors.New("RingRTC SRTCP session is not connected")
+	}
+	raw, err := rtcp.Marshal(packets)
+	if err != nil {
+		return err
+	}
+	stream, err := session.OpenWriteStream()
+	if err != nil {
+		return err
+	}
+	_, err = stream.Write(raw)
+	return err
+}
+
+// HandleRTCP drains all RingRTC SRTCP streams until the leg closes. Each RTCP
+// sender gets a Pion read stream, so accepted streams are drained concurrently.
+func (l *IncomingMediaLeg) HandleRTCP(ctx context.Context, handle func([]rtcp.Packet)) error {
+	l.lock.Lock()
+	session := l.SRTCP
+	l.lock.Unlock()
+	if session == nil {
+		return errors.New("RingRTC SRTCP session is not connected")
+	}
+	for {
+		stream, _, err := session.AcceptStream()
+		if err != nil {
+			return err
+		}
+		go func() {
+			buf := make([]byte, 8192)
+			for ctx.Err() == nil {
+				n, readErr := stream.Read(buf)
+				if readErr != nil {
+					return
+				}
+				packets, unmarshalErr := rtcp.Unmarshal(buf[:n])
+				if unmarshalErr == nil {
+					handle(packets)
+				}
+			}
+		}()
+	}
 }
 
 func (l *IncomingMediaLeg) RTPWriter(payloadType uint8, ssrc uint32) (*RTPWriter, error) {

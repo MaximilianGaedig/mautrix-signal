@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/srtp/v3"
 )
@@ -64,5 +65,45 @@ func TestMediaPacketMuxAndStaticSRTP(t *testing.T) {
 	}
 	if header.PayloadType != OpusPayloadType || !bytes.Equal(packet.Payload, payload) {
 		t.Fatalf("unexpected decrypted RTP: pt=%d payload=%x", header.PayloadType, packet.Payload)
+	}
+
+	rtcpA, err := srtp.NewSessionSRTCP(muxA.rtcp, configA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rtcpA.Close()
+	rtcpB, err := srtp.NewSessionSRTCP(muxB.rtcp, configB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rtcpB.Close()
+	rtcpWriter, err := rtcpA.OpenWriteStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRTCP := &rtcp.PictureLossIndication{SenderSSRC: CalleeVideoSSRC, MediaSSRC: CallerVideoSSRC}
+	rawRTCP, err := wantRTCP.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = rtcpWriter.Write(rawRTCP); err != nil {
+		t.Fatal(err)
+	}
+	rtcpReader, _, err := rtcpB.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rtcpReader.SetReadDeadline(time.Now().Add(time.Second))
+	n, _, err = rtcpReader.ReadRTCP(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packets, err := rtcp.Unmarshal(buf[:n])
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("unexpected decrypted RTCP: packets=%d err=%v", len(packets), err)
+	}
+	gotPLI, ok := packets[0].(*rtcp.PictureLossIndication)
+	if !ok || gotPLI.MediaSSRC != CallerVideoSSRC {
+		t.Fatalf("unexpected decrypted RTCP packet: %+v", packets[0])
 	}
 }

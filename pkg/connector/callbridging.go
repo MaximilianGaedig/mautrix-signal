@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/rtcp"
 	"github.com/pion/stun/v4"
 	"github.com/pion/webrtc/v4"
 	"github.com/rs/zerolog"
@@ -102,20 +103,23 @@ type signalCallSession struct {
 	log    zerolog.Logger
 	lock   sync.Mutex
 
-	portal       *bridgev2.Portal
-	ghost        bridgev2.MatrixAPI
-	peer         libsignalgo.ServiceID
-	signalID     uint64
-	sourceDevice uint32
-	callType     events.CallType
-	videoCodec   string
-	offer        *ringrtc.Offer
-	mxCallID     string
-	mxParty      string
-	mxLeg        *callbridge.Leg
-	signalLeg    *ringrtc.IncomingMediaLeg
-	pendingICE   []string
-	answering    bool
+	portal          *bridgev2.Portal
+	ghost           bridgev2.MatrixAPI
+	peer            libsignalgo.ServiceID
+	signalID        uint64
+	sourceDevice    uint32
+	callType        events.CallType
+	videoCodec      string
+	videoCodecID    ringrtc.VideoCodecType
+	offer           *ringrtc.Offer
+	mxCallID        string
+	mxParty         string
+	mxLeg           *callbridge.Leg
+	signalLeg       *ringrtc.IncomingMediaLeg
+	matrixVideoSSRC uint32
+	pendingKeyframe bool
+	pendingICE      []string
+	answering       bool
 
 	endOnce sync.Once
 }
@@ -164,10 +168,11 @@ func (cb *signalCallBridge) startIncoming(ctx context.Context, evt *events.Call)
 	}
 
 	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	videoCodec, videoCodecID := signalVideoSelection(evt)
 	session := &signalCallSession{
 		bridge: cb, ctx: sessionCtx, cancel: cancel,
 		portal: portal, ghost: ghost.Intent, peer: peer, signalID: evt.ID, sourceDevice: evt.Info.SourceDeviceID,
-		callType: evt.Type, videoCodec: signalVideoCodec(evt), offer: evt.Offer,
+		callType: evt.Type, videoCodec: videoCodec, videoCodecID: videoCodecID, offer: evt.Offer,
 		mxCallID: uuid.NewString(), mxParty: "bridge-" + uuid.NewString()[:8],
 	}
 	if session.callType == events.CallTypeVideo && session.videoCodec == "" {
@@ -260,28 +265,29 @@ func (s *signalCallSession) ringMatrix() error {
 // bidirectional set. Newer peers send encode_only and decode_only sets; a pure
 // RTP relay requires an intersection between them.
 func signalVideoCodec(evt *events.Call) string {
+	mime, _ := signalVideoSelection(evt)
+	return mime
+}
+
+func signalVideoSelection(evt *events.Call) (string, ringrtc.VideoCodecType) {
 	if evt == nil || evt.Type != events.CallTypeVideo || evt.Offer == nil || evt.Offer.V4 == nil {
-		return ""
+		return "", 0
 	}
 	params := evt.Offer.V4
 	encode := params.EncodeOnlyVideoCodecs
 	decode := params.DecodeOnlyVideoCodecs
-	if len(encode) == 0 || len(decode) == 0 {
+	if len(encode) == 0 {
 		encode = params.ReceiveVideoCodecs
+	}
+	if len(decode) == 0 {
 		decode = params.ReceiveVideoCodecs
 	}
-	for _, codec := range encode {
-		if !hasSignalVideoCodec(decode, codec.Type) {
-			continue
-		}
-		switch codec.Type {
-		case ringrtc.VideoCodecVP8:
-			return webrtc.MimeTypeVP8
-		case ringrtc.VideoCodecH264ConstrainedBaseline, ringrtc.VideoCodecH264ConstrainedHigh:
-			return webrtc.MimeTypeH264
-		}
+	// The current RingRTC WebRTC build fixes VP8 to PT 108. Matrix's shared
+	// leg also supports VP8, so this is the codec we can relay without decode.
+	if hasSignalVideoCodec(encode, ringrtc.VideoCodecVP8) && hasSignalVideoCodec(decode, ringrtc.VideoCodecVP8) {
+		return webrtc.MimeTypeVP8, ringrtc.VideoCodecVP8
 	}
-	return ""
+	return "", 0
 }
 
 func hasSignalVideoCodec(codecs []ringrtc.VideoCodec, typ ringrtc.VideoCodecType) bool {
@@ -357,12 +363,7 @@ func (cb *signalCallBridge) handleMatrixEvent(ctx context.Context, portal *bridg
 			go session.end(signalCallEndFailed, true)
 			return
 		}
-		if session.callType == events.CallTypeVideo {
-			session.log.Warn().Msg("Matrix answered Signal video call before the video relay stage")
-			go session.end(signalCallEndUnsupportedAnswer, true)
-			return
-		}
-		go session.answerIncomingAudio(answer.Answer.SDP, answer.PartyID)
+		go session.answerIncoming(answer.Answer.SDP, answer.PartyID)
 	case event.CallCandidates:
 		candidates, ok := parseSignalCallContent[event.CallCandidatesEventContent](evt)
 		if !ok {
@@ -416,7 +417,7 @@ func (cb *signalCallBridge) handleRemoteICE(evt *events.Call) {
 	}
 }
 
-func (s *signalCallSession) answerIncomingAudio(matrixAnswer, matrixParty string) {
+func (s *signalCallSession) answerIncoming(matrixAnswer, matrixParty string) {
 	s.lock.Lock()
 	if s.answering || s.ctx.Err() != nil {
 		s.lock.Unlock()
@@ -466,7 +467,7 @@ func (s *signalCallSession) answerIncomingAudio(matrixAnswer, matrixParty string
 	}
 	signalLeg, err := ringrtc.NewIncomingMediaLeg(ringrtc.IncomingMediaConfig{
 		Remote: s.offer.V4, CallerIdentityKey: peerIdentityBytes, CalleeIdentityKey: localIdentity,
-		ICEServers: iceServers,
+		ICEServers: iceServers, VideoCodec: s.videoCodecID,
 		OnCandidate: func(candidate string) {
 			if s.ctx.Err() == nil {
 				if sendErr := s.sendSignalICE(candidate); sendErr != nil {
@@ -505,8 +506,12 @@ func (s *signalCallSession) answerIncomingAudio(matrixAnswer, matrixParty string
 		s.end(signalCallEndFailed, true)
 		return
 	}
-	s.log.Info().Msg("Signal and Matrix audio legs connected")
+	s.log.Info().Bool("video", s.callType == events.CallTypeVideo).Msg("Signal and Matrix media legs connected")
 	s.startAudioRelays()
+	if s.callType == events.CallTypeVideo {
+		s.startVideoRelays()
+	}
+	s.startRTCPRelay()
 }
 
 func (s *signalCallSession) signalICEServers() ([]*stun.URI, error) {
@@ -551,7 +556,7 @@ func signalICEMessage(callID uint64, destinationDevice uint32, candidate string)
 }
 
 func (s *signalCallSession) startAudioRelays() {
-	writer, err := s.signalLeg.RTPWriter(ringrtc.OpusPayloadType, 2002)
+	writer, err := s.signalLeg.RTPWriter(ringrtc.OpusPayloadType, ringrtc.CalleeAudioSSRC)
 	if err != nil {
 		s.end(signalCallEndFailed, true)
 		return
@@ -567,7 +572,7 @@ func (s *signalCallSession) startAudioRelays() {
 		}
 	}()
 	go func() {
-		reader, _, trackErr := s.signalLeg.AcceptRTP()
+		reader, trackErr := s.signalLeg.RTPReader(ringrtc.CallerAudioSSRC)
 		if trackErr == nil {
 			trackErr = callbridge.Relay(s.ctx, reader, ringrtc.OpusPayloadType, s.mxLeg.Local, &callbridge.RelayStats{}, s.log)
 		}
@@ -576,6 +581,79 @@ func (s *signalCallSession) startAudioRelays() {
 			s.end(signalCallEndFailed, true)
 		}
 	}()
+}
+
+func (s *signalCallSession) startVideoRelays() {
+	writer, err := s.signalLeg.RTPWriter(ringrtc.VP8PayloadType, ringrtc.CalleeVideoSSRC)
+	if err != nil || s.mxLeg.LocalVideo == nil {
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	go func() {
+		track, trackErr := s.mxLeg.RemoteVideoTrack(s.ctx)
+		if trackErr == nil {
+			s.lock.Lock()
+			s.matrixVideoSSRC = uint32(track.SSRC())
+			pendingKeyframe := s.pendingKeyframe
+			s.pendingKeyframe = false
+			s.lock.Unlock()
+			if pendingKeyframe {
+				s.mxLeg.RequestKeyframe(track.SSRC())
+			}
+			trackErr = callbridge.RelayVideo(s.ctx, track, uint8(track.PayloadType()), writer, &callbridge.RelayStats{}, s.log)
+		}
+		if trackErr != nil && s.ctx.Err() == nil {
+			s.log.Warn().Err(trackErr).Msg("Matrix to Signal video relay stopped")
+			s.end(signalCallEndFailed, true)
+		}
+	}()
+	go func() {
+		reader, trackErr := s.signalLeg.RTPReader(ringrtc.CallerVideoSSRC)
+		if trackErr == nil {
+			trackErr = callbridge.RelayVideo(s.ctx, reader, ringrtc.VP8PayloadType, s.mxLeg.LocalVideo, &callbridge.RelayStats{}, s.log)
+		}
+		if trackErr != nil && s.ctx.Err() == nil {
+			s.log.Warn().Err(trackErr).Msg("Signal to Matrix video relay stopped")
+			s.end(signalCallEndFailed, true)
+		}
+	}()
+}
+
+func (s *signalCallSession) startRTCPRelay() {
+	if s.callType == events.CallTypeVideo {
+		s.mxLeg.OnKeyframeRequest(func() {
+			_ = s.signalLeg.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{SenderSSRC: ringrtc.CalleeVideoSSRC, MediaSSRC: ringrtc.CallerVideoSSRC}})
+		})
+	}
+	go func() {
+		err := s.signalLeg.HandleRTCP(s.ctx, func(packets []rtcp.Packet) {
+			if s.callType != events.CallTypeVideo {
+				return
+			}
+			for _, packet := range packets {
+				switch packet.(type) {
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					// RingRTC asks for a keyframe from the Matrix video sender.
+					go s.requestMatrixKeyframe()
+				}
+			}
+		})
+		if err != nil && s.ctx.Err() == nil {
+			s.log.Debug().Msg("Signal RTCP reader stopped")
+		}
+	}()
+}
+
+func (s *signalCallSession) requestMatrixKeyframe() {
+	s.lock.Lock()
+	ssrc := s.matrixVideoSSRC
+	if ssrc == 0 {
+		s.pendingKeyframe = true
+	}
+	s.lock.Unlock()
+	if ssrc != 0 {
+		s.mxLeg.RequestKeyframe(webrtc.SSRC(ssrc))
+	}
 }
 
 func (cb *signalCallBridge) rejectUnsupportedOutgoing(ctx context.Context, portal *bridgev2.Portal, inv *event.CallInviteEventContent) {

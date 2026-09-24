@@ -30,8 +30,8 @@ func TestSignalVideoCodec(t *testing.T) {
 	video := &events.Call{Type: events.CallTypeVideo, Offer: &ringrtc.Offer{V4: &ringrtc.ConnectionParametersV4{
 		ReceiveVideoCodecs: []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP9}, {Type: ringrtc.VideoCodecH264ConstrainedHigh}, {Type: ringrtc.VideoCodecVP8}},
 	}}}
-	if got := signalVideoCodec(video); got != webrtc.MimeTypeH264 {
-		t.Fatalf("expected first supported codec H264, got %q", got)
+	if got := signalVideoCodec(video); got != webrtc.MimeTypeVP8 {
+		t.Fatalf("expected RingRTC-compatible VP8, got %q", got)
 	}
 	video.Offer.V4.ReceiveVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP8}}
 	if got := signalVideoCodec(video); got != webrtc.MimeTypeVP8 {
@@ -45,6 +45,12 @@ func TestSignalVideoCodec(t *testing.T) {
 	video.Offer.V4.DecodeOnlyVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecH264ConstrainedBaseline}}
 	if got := signalVideoCodec(video); got != "" {
 		t.Fatalf("expected no asymmetric intersection, got %q", got)
+	}
+	video.Offer.V4.EncodeOnlyVideoCodecs = nil
+	video.Offer.V4.ReceiveVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP8}}
+	video.Offer.V4.DecodeOnlyVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP8}}
+	if got := signalVideoCodec(video); got != webrtc.MimeTypeVP8 {
+		t.Fatalf("expected independent legacy encode fallback, got %q", got)
 	}
 	video.Type = events.CallTypeAudio
 	if got := signalVideoCodec(video); got != "" {
