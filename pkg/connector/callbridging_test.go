@@ -37,6 +37,15 @@ func TestSignalVideoCodec(t *testing.T) {
 	if got := signalVideoCodec(video); got != webrtc.MimeTypeVP8 {
 		t.Fatalf("expected VP8, got %q", got)
 	}
+	video.Offer.V4.EncodeOnlyVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP9}, {Type: ringrtc.VideoCodecVP8}}
+	video.Offer.V4.DecodeOnlyVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP8}}
+	if got := signalVideoCodec(video); got != webrtc.MimeTypeVP8 {
+		t.Fatalf("expected asymmetric intersection VP8, got %q", got)
+	}
+	video.Offer.V4.DecodeOnlyVideoCodecs = []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecH264ConstrainedBaseline}}
+	if got := signalVideoCodec(video); got != "" {
+		t.Fatalf("expected no asymmetric intersection, got %q", got)
+	}
 	video.Type = events.CallTypeAudio
 	if got := signalVideoCodec(video); got != "" {
 		t.Fatalf("audio call unexpectedly selected %q", got)
@@ -54,5 +63,34 @@ func TestSignalRingingOnlyResponsesAreBroadcast(t *testing.T) {
 	busy := signalBusyMessage(43)
 	if busy.GetBusy().GetId() != 43 || busy.DestinationDeviceId != nil {
 		t.Fatalf("unexpected busy response: %+v", busy)
+	}
+}
+
+func TestSignalAnswerAndICEAreDeviceTargeted(t *testing.T) {
+	params := &ringrtc.ConnectionParametersV4{
+		ICEUfrag: "ufrag", ICEPwd: "password", PublicKey: make([]byte, 32), MaxBitrateBPS: 2_000_000,
+	}
+	answer := signalAnswerMessage(44, 7, params)
+	if answer.GetDestinationDeviceId() != 7 || answer.GetAnswer().GetId() != 44 {
+		t.Fatalf("unexpected answer targeting: %+v", answer)
+	}
+	decodedAnswer, err := ringrtc.DecodeAnswer(answer.GetAnswer().GetOpaque())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodedAnswer.V4 == nil || decodedAnswer.V4.ICEUfrag != params.ICEUfrag || decodedAnswer.V4.MaxBitrateBPS != params.MaxBitrateBPS {
+		t.Fatalf("unexpected encoded answer: %+v", decodedAnswer)
+	}
+
+	ice := signalICEMessage(45, 8, "candidate:test")
+	if ice.GetDestinationDeviceId() != 8 || len(ice.GetIceUpdate()) != 1 || ice.GetIceUpdate()[0].GetId() != 45 {
+		t.Fatalf("unexpected ICE targeting: %+v", ice)
+	}
+	decodedICE, err := ringrtc.DecodeIceCandidate(ice.GetIceUpdate()[0].GetOpaque())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodedICE.AddedV3 == nil || decodedICE.AddedV3.SDP != "candidate:test" {
+		t.Fatalf("unexpected encoded ICE update: %+v", decodedICE)
 	}
 }

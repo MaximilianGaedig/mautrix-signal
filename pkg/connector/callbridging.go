@@ -8,9 +8,8 @@
 
 package connector
 
-// Signal call bridging, stage 3: ring Matrix for incoming 1:1 audio/video calls.
-// This stage deliberately never sends an Answer. A Matrix answer is treated
-// as a local hangup until the Signal ICE/SRTP media leg is implemented.
+// Signal call bridging: ring Matrix for incoming 1:1 audio/video calls and
+// bridge audio calls over RingRTC's ICE/static-SRTP media transport.
 
 import (
 	"context"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/stun/v4"
 	"github.com/pion/webrtc/v4"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
@@ -109,9 +109,13 @@ type signalCallSession struct {
 	sourceDevice uint32
 	callType     events.CallType
 	videoCodec   string
+	offer        *ringrtc.Offer
 	mxCallID     string
 	mxParty      string
 	mxLeg        *callbridge.Leg
+	signalLeg    *ringrtc.IncomingMediaLeg
+	pendingICE   []string
+	answering    bool
 
 	endOnce sync.Once
 }
@@ -123,6 +127,10 @@ func (s *SignalClient) handleSignalCall(evt *events.Call) {
 			return
 		}
 		go s.callBridge.startIncoming(context.WithoutCancel(s.Main.Bridge.BackgroundCtx), evt)
+	case events.CallMessageICE:
+		if evt.ICECandidate != nil && evt.ParseError == "" {
+			s.callBridge.handleRemoteICE(evt)
+		}
 	case events.CallMessageHangup, events.CallMessageBusy:
 		s.callBridge.handleRemoteEnd(evt)
 	}
@@ -159,7 +167,7 @@ func (cb *signalCallBridge) startIncoming(ctx context.Context, evt *events.Call)
 	session := &signalCallSession{
 		bridge: cb, ctx: sessionCtx, cancel: cancel,
 		portal: portal, ghost: ghost.Intent, peer: peer, signalID: evt.ID, sourceDevice: evt.Info.SourceDeviceID,
-		callType: evt.Type, videoCodec: signalVideoCodec(evt),
+		callType: evt.Type, videoCodec: signalVideoCodec(evt), offer: evt.Offer,
 		mxCallID: uuid.NewString(), mxParty: "bridge-" + uuid.NewString()[:8],
 	}
 	if session.callType == events.CallTypeVideo && session.videoCodec == "" {
@@ -248,13 +256,24 @@ func (s *signalCallSession) ringMatrix() error {
 }
 
 // signalVideoCodec picks a codec that callbridge can relay without transcoding.
-// RingRTC's ConnectionParametersV4.receive_video_codecs is the offerer's
-// ordered list of codecs it can receive (protobuf/protobuf/signaling.proto).
+// RingRTC signaling.proto defines receive_video_codecs as the legacy
+// bidirectional set. Newer peers send encode_only and decode_only sets; a pure
+// RTP relay requires an intersection between them.
 func signalVideoCodec(evt *events.Call) string {
 	if evt == nil || evt.Type != events.CallTypeVideo || evt.Offer == nil || evt.Offer.V4 == nil {
 		return ""
 	}
-	for _, codec := range evt.Offer.V4.ReceiveVideoCodecs {
+	params := evt.Offer.V4
+	encode := params.EncodeOnlyVideoCodecs
+	decode := params.DecodeOnlyVideoCodecs
+	if len(encode) == 0 || len(decode) == 0 {
+		encode = params.ReceiveVideoCodecs
+		decode = params.ReceiveVideoCodecs
+	}
+	for _, codec := range encode {
+		if !hasSignalVideoCodec(decode, codec.Type) {
+			continue
+		}
 		switch codec.Type {
 		case ringrtc.VideoCodecVP8:
 			return webrtc.MimeTypeVP8
@@ -263,6 +282,15 @@ func signalVideoCodec(evt *events.Call) string {
 		}
 	}
 	return ""
+}
+
+func hasSignalVideoCodec(codecs []ringrtc.VideoCodec, typ ringrtc.VideoCodecType) bool {
+	for _, codec := range codecs {
+		if codec.Type == typ {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *signalCallSession) baseMatrixContent() event.BaseCallEventContent {
@@ -324,10 +352,230 @@ func (cb *signalCallBridge) handleMatrixEvent(ctx context.Context, portal *bridg
 		session.log.Info().Str("event_type", evt.Type.Type).Msg("Matrix user declined Signal call")
 		go session.end(signalCallEndLocalDecline, true)
 	case event.CallAnswer:
-		// Never turn this into a Signal Answer before the ICE/SRTP leg exists.
-		session.log.Warn().Msg("Matrix answered during ringing-only stage; declining without answering Signal")
-		go session.end(signalCallEndUnsupportedAnswer, true)
+		answer, ok := parseSignalCallContent[event.CallAnswerEventContent](evt)
+		if !ok || answer.Answer.SDP == "" {
+			go session.end(signalCallEndFailed, true)
+			return
+		}
+		if session.callType == events.CallTypeVideo {
+			session.log.Warn().Msg("Matrix answered Signal video call before the video relay stage")
+			go session.end(signalCallEndUnsupportedAnswer, true)
+			return
+		}
+		go session.answerIncomingAudio(answer.Answer.SDP, answer.PartyID)
+	case event.CallCandidates:
+		candidates, ok := parseSignalCallContent[event.CallCandidatesEventContent](evt)
+		if !ok {
+			return
+		}
+		session.addMatrixCandidates(candidates.Candidates)
 	}
+}
+
+func (s *signalCallSession) addMatrixCandidates(candidates []event.CallCandidate) {
+	s.lock.Lock()
+	leg := s.mxLeg
+	s.lock.Unlock()
+	if leg == nil {
+		return
+	}
+	for _, candidate := range candidates {
+		if candidate.SDPMLineIndex < 0 || candidate.SDPMLineIndex > 65535 {
+			s.log.Debug().Msg("Rejected Matrix ICE candidate with invalid media line index")
+			continue
+		}
+		mid := candidate.SDPMID
+		line := uint16(candidate.SDPMLineIndex)
+		if err := leg.AddCandidate(webrtc.ICECandidateInit{
+			Candidate: candidate.Candidate, SDPMid: &mid, SDPMLineIndex: &line,
+		}); err != nil {
+			// Candidate errors can contain addresses, so do not attach the error.
+			s.log.Debug().Msg("Rejected malformed Matrix ICE candidate")
+		}
+	}
+}
+
+func (cb *signalCallBridge) handleRemoteICE(evt *events.Call) {
+	cb.lock.Lock()
+	session := cb.active
+	cb.lock.Unlock()
+	if session == nil || session.signalID != evt.ID || session.peer.UUID != evt.Info.Sender || evt.ICECandidate.AddedV3 == nil {
+		return
+	}
+	session.lock.Lock()
+	leg := session.signalLeg
+	if leg == nil {
+		session.pendingICE = append(session.pendingICE, evt.ICECandidate.AddedV3.SDP)
+		session.lock.Unlock()
+		return
+	}
+	session.lock.Unlock()
+	if err := leg.AddRemoteCandidate(evt.ICECandidate.AddedV3.SDP); err != nil {
+		// Candidate errors can contain addresses, so do not attach the error.
+		session.log.Debug().Msg("Rejected malformed remote Signal ICE candidate")
+	}
+}
+
+func (s *signalCallSession) answerIncomingAudio(matrixAnswer, matrixParty string) {
+	s.lock.Lock()
+	if s.answering || s.ctx.Err() != nil {
+		s.lock.Unlock()
+		return
+	}
+	s.answering = true
+	mxLeg := s.mxLeg
+	s.lock.Unlock()
+	if mxLeg == nil || s.offer == nil || s.offer.V4 == nil {
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	if err := mxLeg.SetAnswer(matrixAnswer); err != nil {
+		s.log.Warn().Msg("Rejected malformed Matrix call answer")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	_, err := s.ghost.SendMessage(s.ctx, s.portal.MXID, event.CallSelectAnswer, signalCallEventContent(&event.CallSelectAnswerEventContent{
+		BaseCallEventContent: s.baseMatrixContent(), SelectedPartyID: matrixParty,
+	}), nil)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("Failed to select Matrix call answer")
+	}
+	iceServers, err := s.signalICEServers()
+	if err != nil {
+		s.log.Error().Err(err).Msg("Failed to prepare Signal calling relays")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	localIdentity, err := s.bridge.client.Client.Store.ACIIdentityKeyPair.GetPublicKey().Serialize()
+	if err != nil {
+		s.log.Error().Err(err).Msg("Failed to serialize local Signal identity key")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	peerIdentity, err := s.bridge.client.Client.Store.IdentityKeyStore.GetIdentityKey(s.ctx, s.peer)
+	if err != nil || peerIdentity == nil {
+		s.log.Error().Err(err).Msg("Failed to load Signal caller identity key")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	peerIdentityBytes, err := peerIdentity.Serialize()
+	if err != nil {
+		s.log.Error().Err(err).Msg("Failed to serialize Signal caller identity key")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	signalLeg, err := ringrtc.NewIncomingMediaLeg(ringrtc.IncomingMediaConfig{
+		Remote: s.offer.V4, CallerIdentityKey: peerIdentityBytes, CalleeIdentityKey: localIdentity,
+		ICEServers: iceServers,
+		OnCandidate: func(candidate string) {
+			if s.ctx.Err() == nil {
+				if sendErr := s.sendSignalICE(candidate); sendErr != nil {
+					s.log.Warn().Err(sendErr).Msg("Failed to send local Signal ICE candidate")
+				}
+			}
+		},
+	})
+	if err != nil {
+		s.log.Error().Err(err).Msg("Failed to create Signal media leg")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	s.lock.Lock()
+	s.signalLeg = signalLeg
+	pendingICE := s.pendingICE
+	s.pendingICE = nil
+	s.lock.Unlock()
+	for _, candidate := range pendingICE {
+		if err = signalLeg.AddRemoteCandidate(candidate); err != nil {
+			s.log.Debug().Msg("Rejected malformed queued Signal ICE candidate")
+		}
+	}
+	if err = s.sendSignalAnswer(signalLeg.Parameters); err != nil {
+		s.log.Error().Err(err).Msg("Failed to answer Signal call")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	if err = signalLeg.GatherCandidates(); err != nil {
+		s.log.Error().Err(err).Msg("Failed to gather Signal ICE candidates")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	if err = signalLeg.Connect(s.ctx); err != nil {
+		s.log.Error().Err(err).Msg("Failed to connect Signal media leg")
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	s.log.Info().Msg("Signal and Matrix audio legs connected")
+	s.startAudioRelays()
+}
+
+func (s *signalCallSession) signalICEServers() ([]*stun.URI, error) {
+	relays, err := s.bridge.client.Client.GetCallingRelays(s.ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*stun.URI
+	for _, relay := range relays.Relays {
+		urls := relay.URLs
+		if len(urls) == 0 {
+			urls = relay.URLsWithIPs
+		}
+		parsed, parseErr := ringrtc.ParseICEServerURLs(urls, relay.Username, relay.Password)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		out = append(out, parsed...)
+	}
+	return out, nil
+}
+
+func (s *signalCallSession) sendSignalAnswer(params *ringrtc.ConnectionParametersV4) error {
+	return s.bridge.sendCallMessage(s.ctx, s.peer, signalAnswerMessage(s.signalID, s.sourceDevice, params))
+}
+
+func (s *signalCallSession) sendSignalICE(candidate string) error {
+	return s.bridge.sendCallMessage(s.ctx, s.peer, signalICEMessage(s.signalID, s.sourceDevice, candidate))
+}
+
+func signalAnswerMessage(callID uint64, destinationDevice uint32, params *ringrtc.ConnectionParametersV4) *signalpb.CallMessage {
+	answer := &signalpb.CallMessage_Answer{Id: ptr.Ptr(callID), Opaque: ringrtc.EncodeAnswer(&ringrtc.Answer{V4: params})}
+	return &signalpb.CallMessage{Answer: answer, DestinationDeviceId: ptr.Ptr(destinationDevice)}
+}
+
+func signalICEMessage(callID uint64, destinationDevice uint32, candidate string) *signalpb.CallMessage {
+	iceUpdate := &signalpb.CallMessage_IceUpdate{
+		Id:     ptr.Ptr(callID),
+		Opaque: ringrtc.EncodeIceCandidate(&ringrtc.IceCandidate{AddedV3: &ringrtc.IceCandidateV3{SDP: candidate}}),
+	}
+	return &signalpb.CallMessage{IceUpdate: []*signalpb.CallMessage_IceUpdate{iceUpdate}, DestinationDeviceId: ptr.Ptr(destinationDevice)}
+}
+
+func (s *signalCallSession) startAudioRelays() {
+	writer, err := s.signalLeg.RTPWriter(ringrtc.OpusPayloadType, 2002)
+	if err != nil {
+		s.end(signalCallEndFailed, true)
+		return
+	}
+	go func() {
+		track, trackErr := s.mxLeg.RemoteTrack(s.ctx)
+		if trackErr == nil {
+			trackErr = callbridge.Relay(s.ctx, track, uint8(track.PayloadType()), writer, &callbridge.RelayStats{}, s.log)
+		}
+		if trackErr != nil && s.ctx.Err() == nil {
+			s.log.Warn().Err(trackErr).Msg("Matrix to Signal audio relay stopped")
+			s.end(signalCallEndFailed, true)
+		}
+	}()
+	go func() {
+		reader, _, trackErr := s.signalLeg.AcceptRTP()
+		if trackErr == nil {
+			trackErr = callbridge.Relay(s.ctx, reader, ringrtc.OpusPayloadType, s.mxLeg.Local, &callbridge.RelayStats{}, s.log)
+		}
+		if trackErr != nil && s.ctx.Err() == nil {
+			s.log.Warn().Err(trackErr).Msg("Signal to Matrix audio relay stopped")
+			s.end(signalCallEndFailed, true)
+		}
+	}()
 }
 
 func (cb *signalCallBridge) rejectUnsupportedOutgoing(ctx context.Context, portal *bridgev2.Portal, inv *event.CallInviteEventContent) {
@@ -415,9 +663,13 @@ func (s *signalCallSession) end(reason signalCallEnd, notifySignal bool) {
 		s.cancel()
 		s.lock.Lock()
 		mxLeg := s.mxLeg
+		signalLeg := s.signalLeg
 		s.lock.Unlock()
 		if mxLeg != nil {
 			mxLeg.Close()
+		}
+		if signalLeg != nil {
+			_ = signalLeg.Close()
 		}
 		s.bridge.lock.Lock()
 		if s.bridge.active == s {
