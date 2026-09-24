@@ -66,3 +66,34 @@ func TestDecodeRejectsWrongWireType(t *testing.T) {
 		t.Fatal("expected a wire type error")
 	}
 }
+
+func TestSignalingEncodeRoundTrip(t *testing.T) {
+	params := &ConnectionParametersV4{
+		PublicKey: bytes.Repeat([]byte{0x23}, 32), ICEUfrag: "local-ufrag", ICEPwd: "local-password",
+		ReceiveVideoCodecs: []VideoCodec{{Type: VideoCodecVP8}}, MaxBitrateBPS: 1_500_000,
+		EncodeOnlyVideoCodecs: []VideoCodec{{Type: VideoCodecVP9}},
+		DecodeOnlyVideoCodecs: []VideoCodec{{Type: VideoCodecH264ConstrainedBaseline}},
+	}
+	answer, err := DecodeAnswer(EncodeAnswer(&Answer{V4: params}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.V4 == nil || !bytes.Equal(answer.V4.PublicKey, params.PublicKey) || answer.V4.ICEUfrag != params.ICEUfrag || answer.V4.ICEPwd != params.ICEPwd || answer.V4.MaxBitrateBPS != params.MaxBitrateBPS {
+		t.Fatalf("answer round trip mismatch: %+v", answer.V4)
+	}
+	if len(answer.V4.ReceiveVideoCodecs) != 1 || len(answer.V4.EncodeOnlyVideoCodecs) != 1 || len(answer.V4.DecodeOnlyVideoCodecs) != 1 {
+		t.Fatalf("answer codec round trip mismatch: %+v", answer.V4)
+	}
+	offer, err := DecodeOffer(EncodeOffer(&Offer{V4: params}))
+	if err != nil || offer.V4 == nil || offer.V4.ICEUfrag != params.ICEUfrag {
+		t.Fatalf("offer round trip mismatch: %+v, %v", offer, err)
+	}
+	candidate := &IceCandidate{
+		AddedV3: &IceCandidateV3{SDP: "candidate:1 1 udp 1 192.0.2.1 1234 typ host"},
+		Removed: &SocketAddr{IP: []byte{192, 0, 2, 1}, Port: 1234},
+	}
+	decodedCandidate, err := DecodeIceCandidate(EncodeIceCandidate(candidate))
+	if err != nil || decodedCandidate.AddedV3 == nil || decodedCandidate.AddedV3.SDP != candidate.AddedV3.SDP || decodedCandidate.Removed == nil || !bytes.Equal(decodedCandidate.Removed.IP, candidate.Removed.IP) || decodedCandidate.Removed.Port != candidate.Removed.Port {
+		t.Fatalf("candidate round trip mismatch: %+v, %v", decodedCandidate, err)
+	}
+}

@@ -69,6 +69,23 @@ func DecodeOffer(data []byte) (*Offer, error) {
 	return &Offer{V4: v4}, err
 }
 
+// EncodeOffer and EncodeAnswer produce the opaque payloads used by RingRTC's
+// Signal CallMessage. The wire layout is defined in
+// ringrtc/protobuf/protobuf/signaling.proto.
+func EncodeOffer(offer *Offer) []byte {
+	if offer == nil || offer.V4 == nil {
+		return nil
+	}
+	return appendBytesField(nil, 4, encodeConnectionParametersV4(offer.V4))
+}
+
+func EncodeAnswer(answer *Answer) []byte {
+	if answer == nil || answer.V4 == nil {
+		return nil
+	}
+	return appendBytesField(nil, 4, encodeConnectionParametersV4(answer.V4))
+}
+
 func DecodeAnswer(data []byte) (*Answer, error) {
 	v4, err := decodeVersionedConnectionParameters(data)
 	return &Answer{V4: v4}, err
@@ -136,6 +153,36 @@ func decodeConnectionParametersV4(data []byte) (*ConnectionParametersV4, error) 
 	return out, err
 }
 
+func encodeConnectionParametersV4(params *ConnectionParametersV4) []byte {
+	var out []byte
+	if len(params.PublicKey) > 0 {
+		out = appendBytesField(out, 1, params.PublicKey)
+	}
+	if params.ICEUfrag != "" {
+		out = appendBytesField(out, 2, []byte(params.ICEUfrag))
+	}
+	if params.ICEPwd != "" {
+		out = appendBytesField(out, 3, []byte(params.ICEPwd))
+	}
+	for _, codec := range params.ReceiveVideoCodecs {
+		out = appendBytesField(out, 4, encodeVideoCodec(codec))
+	}
+	if params.MaxBitrateBPS != 0 {
+		out = appendVarintField(out, 5, params.MaxBitrateBPS)
+	}
+	for _, codec := range params.EncodeOnlyVideoCodecs {
+		out = appendBytesField(out, 6, encodeVideoCodec(codec))
+	}
+	for _, codec := range params.DecodeOnlyVideoCodecs {
+		out = appendBytesField(out, 7, encodeVideoCodec(codec))
+	}
+	return out
+}
+
+func encodeVideoCodec(codec VideoCodec) []byte {
+	return appendVarintField(nil, 1, uint64(codec.Type))
+}
+
 func decodeVideoCodec(data []byte) (VideoCodec, error) {
 	var out VideoCodec
 	err := consumeMessage(data, func(number protowire.Number, typ protowire.Type, _ []byte, value uint64) error {
@@ -169,6 +216,27 @@ func DecodeIceCandidate(data []byte) (*IceCandidate, error) {
 		return err
 	})
 	return out, err
+}
+
+func EncodeIceCandidate(candidate *IceCandidate) []byte {
+	if candidate == nil {
+		return nil
+	}
+	var out []byte
+	if candidate.AddedV3 != nil {
+		out = appendBytesField(out, 2, appendBytesField(nil, 1, []byte(candidate.AddedV3.SDP)))
+	}
+	if candidate.Removed != nil {
+		var removed []byte
+		if len(candidate.Removed.IP) > 0 {
+			removed = appendBytesField(removed, 1, candidate.Removed.IP)
+		}
+		if candidate.Removed.Port != 0 {
+			removed = appendVarintField(removed, 2, uint64(candidate.Removed.Port))
+		}
+		out = appendBytesField(out, 3, removed)
+	}
+	return out
 }
 
 func decodeIceCandidateV3(data []byte) (*IceCandidateV3, error) {
@@ -238,4 +306,14 @@ func consumeMessage(data []byte, consume fieldConsumer) error {
 
 func wrongWireType(number protowire.Number, got, want protowire.Type) error {
 	return fmt.Errorf("ringrtc field %d has wire type %d, want %d", number, got, want)
+}
+
+func appendBytesField(dst []byte, number protowire.Number, value []byte) []byte {
+	dst = protowire.AppendTag(dst, number, protowire.BytesType)
+	return protowire.AppendBytes(dst, value)
+}
+
+func appendVarintField(dst []byte, number protowire.Number, value uint64) []byte {
+	dst = protowire.AppendTag(dst, number, protowire.VarintType)
+	return protowire.AppendVarint(dst, value)
 }
