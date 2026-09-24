@@ -8,7 +8,7 @@
 
 package connector
 
-// Signal call bridging, stage 3: ring Matrix for incoming 1:1 audio calls.
+// Signal call bridging, stage 3: ring Matrix for incoming 1:1 audio/video calls.
 // This stage deliberately never sends an Answer. A Matrix answer is treated
 // as a local hangup until the Signal ICE/SRTP media leg is implemented.
 
@@ -32,6 +32,7 @@ import (
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/events"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/protobuf/signalpb"
+	"go.mau.fi/mautrix-signal/pkg/signalmeow/ringrtc"
 )
 
 const signalCallInviteLifetime = 60 * time.Second
@@ -106,6 +107,8 @@ type signalCallSession struct {
 	peer         libsignalgo.ServiceID
 	signalID     uint64
 	sourceDevice uint32
+	callType     events.CallType
+	videoCodec   string
 	mxCallID     string
 	mxParty      string
 	mxLeg        *callbridge.Leg
@@ -116,7 +119,7 @@ type signalCallSession struct {
 func (s *SignalClient) handleSignalCall(evt *events.Call) {
 	switch evt.MessageType {
 	case events.CallMessageOffer:
-		if evt.Type != events.CallTypeAudio || evt.Offer == nil || evt.ParseError != "" {
+		if (evt.Type != events.CallTypeAudio && evt.Type != events.CallTypeVideo) || evt.Offer == nil || evt.Offer.V4 == nil || evt.ParseError != "" {
 			return
 		}
 		go s.callBridge.startIncoming(context.WithoutCancel(s.Main.Bridge.BackgroundCtx), evt)
@@ -156,7 +159,13 @@ func (cb *signalCallBridge) startIncoming(ctx context.Context, evt *events.Call)
 	session := &signalCallSession{
 		bridge: cb, ctx: sessionCtx, cancel: cancel,
 		portal: portal, ghost: ghost.Intent, peer: peer, signalID: evt.ID, sourceDevice: evt.Info.SourceDeviceID,
+		callType: evt.Type, videoCodec: signalVideoCodec(evt),
 		mxCallID: uuid.NewString(), mxParty: "bridge-" + uuid.NewString()[:8],
+	}
+	if session.callType == events.CallTypeVideo && session.videoCodec == "" {
+		cancel()
+		cb.client.UserLogin.Log.Warn().Msg("Can't ring Matrix for Signal video call without a mutually supported relay codec")
+		return
 	}
 	session.log = cb.client.UserLogin.Log.With().
 		Str("component", "call bridge").
@@ -209,7 +218,7 @@ func (s *signalCallSession) matrixICEServers() []webrtc.ICEServer {
 
 func (s *signalCallSession) ringMatrix() error {
 	leg, err := callbridge.NewLeg(callbridge.LegConfig{
-		Name: "matrix", ICEServers: s.matrixICEServers(), Log: s.log,
+		Name: "matrix", ICEServers: s.matrixICEServers(), VideoCodec: s.videoCodec, Log: s.log,
 	})
 	if err != nil {
 		return err
@@ -236,6 +245,24 @@ func (s *signalCallSession) ringMatrix() error {
 		Offer:                event.CallData{SDP: offer, Type: event.CallDataTypeOffer},
 	}), nil)
 	return err
+}
+
+// signalVideoCodec picks a codec that callbridge can relay without transcoding.
+// RingRTC's ConnectionParametersV4.receive_video_codecs is the offerer's
+// ordered list of codecs it can receive (protobuf/protobuf/signaling.proto).
+func signalVideoCodec(evt *events.Call) string {
+	if evt == nil || evt.Type != events.CallTypeVideo || evt.Offer == nil || evt.Offer.V4 == nil {
+		return ""
+	}
+	for _, codec := range evt.Offer.V4.ReceiveVideoCodecs {
+		switch codec.Type {
+		case ringrtc.VideoCodecVP8:
+			return webrtc.MimeTypeVP8
+		case ringrtc.VideoCodecH264ConstrainedBaseline, ringrtc.VideoCodecH264ConstrainedHigh:
+			return webrtc.MimeTypeH264
+		}
+	}
+	return ""
 }
 
 func (s *signalCallSession) baseMatrixContent() event.BaseCallEventContent {
