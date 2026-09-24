@@ -21,6 +21,7 @@ import (
 
 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/protobuf/signalpb"
+	"go.mau.fi/mautrix-signal/pkg/signalmeow/ringrtc"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
 )
 
@@ -69,10 +70,58 @@ type ReadSelf struct {
 	Messages  []*signalpb.SyncMessage_Read
 }
 
+type CallDirection string
+
+const (
+	CallDirectionIncoming CallDirection = "incoming"
+	CallDirectionOutgoing CallDirection = "outgoing"
+)
+
+type CallMessageType string
+
+const (
+	CallMessageOffer  CallMessageType = "offer"
+	CallMessageAnswer CallMessageType = "answer"
+	CallMessageICE    CallMessageType = "ice_update"
+	CallMessageBusy   CallMessageType = "busy"
+	CallMessageHangup CallMessageType = "hangup"
+	CallMessageOpaque CallMessageType = "opaque"
+)
+
+type CallType string
+
+const (
+	CallTypeAudio CallType = "audio"
+	CallTypeVideo CallType = "video"
+)
+
 type Call struct {
-	Info      MessageInfo
-	Timestamp uint64
-	IsRinging bool
+	Info                MessageInfo
+	Timestamp           uint64
+	IsRinging           bool
+	ID                  uint64
+	Direction           CallDirection
+	MessageType         CallMessageType
+	Type                CallType
+	DestinationDeviceID uint32
+	HangupType          signalpb.CallMessage_Hangup_Type
+	HangupDeviceID      uint32
+	OpaqueUrgency       signalpb.CallMessage_Opaque_Urgency
+	OpaqueLength        int
+	Offer               *ringrtc.Offer
+	Answer              *ringrtc.Answer
+	ICECandidate        *ringrtc.IceCandidate
+	ParseError          string
+}
+
+func (c *Call) ConnectionParameters() *ringrtc.ConnectionParametersV4 {
+	if c.Offer != nil {
+		return c.Offer.V4
+	}
+	if c.Answer != nil {
+		return c.Answer.V4
+	}
+	return nil
 }
 
 type ContactList struct {

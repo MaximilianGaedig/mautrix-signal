@@ -62,7 +62,14 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 	case *events.MessageRequestResponse:
 		return s.handleSignalMessageRequestResponse(evt)
 	case *events.Call:
-		return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, s.wrapCallEvent(evt)).Success
+		s.logCallSignal(evt)
+		// Preserve the existing user-visible behavior: only offers and hangups
+		// become timeline notices. Answer, ICE, busy and opaque messages are
+		// read-only signalling observations for now.
+		if evt.MessageType == "" || evt.MessageType == events.CallMessageOffer || evt.MessageType == events.CallMessageHangup {
+			return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, s.wrapCallEvent(evt)).Success
+		}
+		return true
 	case *events.ContactList:
 		s.handleSignalContactList(evt)
 	case *events.ACIFound:
@@ -75,6 +82,42 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 		s.UserLogin.Log.Warn().Type("event_type", evt).Msg("Unrecognized signalmeow event type")
 	}
 	return true
+}
+
+func (s *SignalClient) logCallSignal(evt *events.Call) {
+	log := s.UserLogin.Log.Info().
+		Str("call_message", string(evt.MessageType)).
+		Str("call_direction", string(evt.Direction)).
+		Uint64("call_id", evt.ID).
+		Str("call_type", string(evt.Type)).
+		Uint32("destination_device_id", evt.DestinationDeviceID).
+		Str("parse_error", evt.ParseError)
+	if params := evt.ConnectionParameters(); params != nil {
+		log = log.
+			Int("public_key_bytes", len(params.PublicKey)).
+			Bool("has_ice_ufrag", params.ICEUfrag != "").
+			Bool("has_ice_pwd", params.ICEPwd != "").
+			Int("receive_video_codecs", len(params.ReceiveVideoCodecs)).
+			Int("encode_video_codecs", len(params.EncodeOnlyVideoCodecs)).
+			Int("decode_video_codecs", len(params.DecodeOnlyVideoCodecs)).
+			Uint64("max_bitrate_bps", params.MaxBitrateBPS)
+	}
+	if candidate := evt.ICECandidate; candidate != nil {
+		log = log.Bool("ice_added", candidate.AddedV3 != nil).Bool("ice_removed", candidate.Removed != nil)
+		if candidate.AddedV3 != nil {
+			log = log.Int("ice_sdp_bytes", len(candidate.AddedV3.SDP))
+		}
+		if candidate.Removed != nil {
+			log = log.Int("removed_ip_bytes", len(candidate.Removed.IP))
+		}
+	}
+	if evt.MessageType == events.CallMessageHangup {
+		log = log.Stringer("hangup_type", evt.HangupType).Uint32("hangup_device_id", evt.HangupDeviceID)
+	}
+	if evt.MessageType == events.CallMessageOpaque {
+		log = log.Stringer("opaque_urgency", evt.OpaqueUrgency).Int("opaque_bytes", evt.OpaqueLength)
+	}
+	log.Msg("Received Signal call signalling")
 }
 
 func (s *SignalClient) wrapCallEvent(evt *events.Call) bridgev2.RemoteMessage {

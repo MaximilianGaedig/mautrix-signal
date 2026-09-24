@@ -649,17 +649,16 @@ func (cli *Client) handleDecryptedResult(
 			})
 		}
 	case *signalpb.Content_CallMessage:
-		if !isBlocked && (content.CallMessage.Offer != nil || content.CallMessage.Hangup != nil) {
-			handlerSuccess = cli.handleEvent(&events.Call{
-				Info: events.MessageInfo{
-					Sender:          theirServiceID.UUID,
-					ChatID:          theirServiceID.String(),
-					ServerTimestamp: envelope.GetServerTimestamp(),
-				},
-				// CallMessage doesn't have its own timestamp, use one from the envelope
-				Timestamp: envelope.GetClientTimestamp(),
-				IsRinging: content.CallMessage.Offer != nil,
-			})
+		if !isBlocked {
+			info := events.MessageInfo{
+				Sender:          theirServiceID.UUID,
+				ChatID:          theirServiceID.String(),
+				ServerTimestamp: envelope.GetServerTimestamp(),
+			}
+			// CallMessage doesn't have its own timestamp, use one from the envelope.
+			for _, callEvent := range parseCallMessage(content.CallMessage, info, envelope.GetClientTimestamp()) {
+				handlerSuccess = cli.handleEvent(callEvent) || handlerSuccess
+			}
 		}
 	case *signalpb.Content_DecryptionErrorMessage:
 		// These should've been handled earlier
