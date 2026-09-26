@@ -720,7 +720,19 @@ func (s *signalCallSession) identityKeys() (caller, callee []byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	} else if peerIdentity == nil {
-		return nil, nil, errors.New("peer Signal identity key is missing")
+		// A portal can outlive the Signal session that originally created it. In
+		// particular, old DMs may have no cached identity key at all. RingRTC's
+		// SRTP KDF needs that key before the call offer can be built, so establish
+		// a fresh session just as the normal message-send path does.
+		if err = s.bridge.client.Client.FetchAndProcessPreKey(s.ctx, s.peer, -1); err != nil {
+			return nil, nil, fmt.Errorf("failed to fetch peer Signal identity key: %w", err)
+		}
+		peerIdentity, err = s.bridge.client.Client.Store.IdentityKeyStore.GetIdentityKey(s.ctx, s.peer)
+		if err != nil {
+			return nil, nil, err
+		} else if peerIdentity == nil {
+			return nil, nil, errors.New("peer Signal identity key is missing after prekey refresh")
+		}
 	}
 	peer, err := peerIdentity.Serialize()
 	if err != nil {
