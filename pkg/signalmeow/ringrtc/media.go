@@ -48,16 +48,26 @@ type IncomingMediaConfig struct {
 	OnCandidate       func(string)
 }
 
-// IncomingMediaLeg is the controlled ICE + static-key SRTP side of an
-// incoming RingRTC call. RingRTC disables DTLS and installs the negotiated
+type OutgoingMediaConfig struct {
+	CallerIdentityKey []byte
+	CalleeIdentityKey []byte
+	ICEServers        []*stun.URI
+	VideoCodec        VideoCodecType
+	OnCandidate       func(string)
+}
+
+// MediaLeg is the controlled ICE + static-key SRTP side of a RingRTC call.
+// RingRTC disables DTLS and installs the negotiated
 // AEAD_AES_256_GCM keys directly (core/connection.rs negotiate_srtp_keys), so
 // this intentionally does not use pion/webrtc PeerConnection.
-type IncomingMediaLeg struct {
+type MediaLeg struct {
 	Agent      *ice.Agent
 	Parameters *ConnectionParametersV4
 
-	remote *ConnectionParametersV4
-	keys   *NegotiatedSRTPKeys
+	remote                                              *ConnectionParametersV4
+	dial                                                bool
+	localKey, remoteKey                                 SRTPKey
+	privateSecret, callerIdentityKey, calleeIdentityKey []byte
 
 	lock  sync.Mutex
 	conn  net.Conn
@@ -76,52 +86,102 @@ type RTPWriter struct {
 	ssrc        uint32
 }
 
-func NewIncomingMediaLeg(cfg IncomingMediaConfig) (*IncomingMediaLeg, error) {
+func NewIncomingMediaLeg(cfg IncomingMediaConfig) (*MediaLeg, error) {
 	if cfg.Remote == nil || len(cfg.Remote.PublicKey) != 32 || cfg.Remote.ICEUfrag == "" || cfg.Remote.ICEPwd == "" {
 		return nil, errors.New("incomplete remote RingRTC connection parameters")
 	}
-	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate RingRTC media key: %w", err)
-	}
-	secret := privateKey.Bytes()
-	keys, err := NegotiateSRTPKeys(secret, cfg.Remote.PublicKey, cfg.CallerIdentityKey, cfg.CalleeIdentityKey)
-	clear(secret)
+	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate)
 	if err != nil {
 		return nil, err
 	}
-	agent, err := ice.NewAgent(&ice.AgentConfig{Urls: cfg.ICEServers})
+	keys, err := NegotiateSRTPKeys(secret, cfg.Remote.PublicKey, cfg.CallerIdentityKey, cfg.CalleeIdentityKey)
+	clear(secret)
 	if err != nil {
-		return nil, fmt.Errorf("create RingRTC ICE agent: %w", err)
+		_ = leg.Agent.Close()
+		return nil, err
+	}
+	leg.remote = cfg.Remote
+	leg.localKey, leg.remoteKey = keys.Answer, keys.Offer
+	return leg, nil
+}
+
+func NewOutgoingMediaLeg(cfg OutgoingMediaConfig) (*MediaLeg, error) {
+	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate)
+	if err != nil {
+		return nil, err
+	}
+	leg.dial = true
+	leg.privateSecret = secret
+	leg.callerIdentityKey = append([]byte(nil), cfg.CallerIdentityKey...)
+	leg.calleeIdentityKey = append([]byte(nil), cfg.CalleeIdentityKey...)
+	return leg, nil
+}
+
+func newMediaLeg(iceServers []*stun.URI, videoCodec VideoCodecType, onCandidate func(string)) (*MediaLeg, []byte, error) {
+	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate RingRTC media key: %w", err)
+	}
+	agent, err := ice.NewAgent(&ice.AgentConfig{Urls: iceServers})
+	if err != nil {
+		return nil, nil, fmt.Errorf("create RingRTC ICE agent: %w", err)
 	}
 	ufrag, pwd, err := agent.GetLocalUserCredentials()
 	if err != nil {
 		_ = agent.Close()
-		return nil, fmt.Errorf("get RingRTC ICE credentials: %w", err)
+		return nil, nil, fmt.Errorf("get RingRTC ICE credentials: %w", err)
 	}
 	params := &ConnectionParametersV4{
 		PublicKey: privateKey.PublicKey().Bytes(), ICEUfrag: ufrag, ICEPwd: pwd,
 		// RingRTC DataMode::Normal advertises a local receive ceiling of 2 Mbps.
 		MaxBitrateBPS: 2_000_000,
 	}
-	if cfg.VideoCodec != 0 {
-		codec := VideoCodec{Type: cfg.VideoCodec}
+	if videoCodec != 0 {
+		codec := VideoCodec{Type: videoCodec}
 		params.ReceiveVideoCodecs = []VideoCodec{codec}
 		params.EncodeOnlyVideoCodecs = []VideoCodec{codec}
 		params.DecodeOnlyVideoCodecs = []VideoCodec{codec}
 	}
-	leg := &IncomingMediaLeg{Agent: agent, Parameters: params, remote: cfg.Remote, keys: keys}
+	leg := &MediaLeg{Agent: agent, Parameters: params}
 	if err = agent.OnCandidate(func(candidate ice.Candidate) {
-		if candidate != nil && cfg.OnCandidate != nil {
+		if candidate != nil && onCandidate != nil {
 			// RingRTC IceCandidate::from_v3_sdp forwards WebRTC's candidate
 			// string verbatim; pion's Marshal omits the candidate: prefix.
-			cfg.OnCandidate("candidate:" + candidate.Marshal())
+			onCandidate("candidate:" + candidate.Marshal())
 		}
 	}); err != nil {
 		_ = agent.Close()
-		return nil, fmt.Errorf("set RingRTC ICE candidate handler: %w", err)
+		return nil, nil, fmt.Errorf("set RingRTC ICE candidate handler: %w", err)
 	}
-	return leg, nil
+	return leg, privateKey.Bytes(), nil
+}
+
+func (l *MediaLeg) SetRemoteAnswer(remote *ConnectionParametersV4) error {
+	if remote == nil || len(remote.PublicKey) != 32 || remote.ICEUfrag == "" || remote.ICEPwd == "" {
+		return errors.New("incomplete remote RingRTC connection parameters")
+	}
+	l.lock.Lock()
+	if !l.dial || len(l.privateSecret) == 0 || l.remote != nil {
+		l.lock.Unlock()
+		return errors.New("RingRTC media leg cannot accept an answer")
+	}
+	secret := l.privateSecret
+	callerIdentityKey := l.callerIdentityKey
+	calleeIdentityKey := l.calleeIdentityKey
+	l.privateSecret, l.callerIdentityKey, l.calleeIdentityKey = nil, nil, nil
+	l.lock.Unlock()
+	keys, err := NegotiateSRTPKeys(secret, remote.PublicKey, callerIdentityKey, calleeIdentityKey)
+	clear(secret)
+	clear(callerIdentityKey)
+	clear(calleeIdentityKey)
+	if err != nil {
+		return err
+	}
+	l.lock.Lock()
+	l.remote = remote
+	l.localKey, l.remoteKey = keys.Offer, keys.Answer
+	l.lock.Unlock()
+	return nil
 }
 
 func ParseICEServerURLs(urls []string, username, password string) ([]*stun.URI, error) {
@@ -138,11 +198,11 @@ func ParseICEServerURLs(urls []string, username, password string) ([]*stun.URI, 
 	return parsed, nil
 }
 
-func (l *IncomingMediaLeg) GatherCandidates() error {
+func (l *MediaLeg) GatherCandidates() error {
 	return l.Agent.GatherCandidates()
 }
 
-func (l *IncomingMediaLeg) AddRemoteCandidate(sdp string) error {
+func (l *MediaLeg) AddRemoteCandidate(sdp string) error {
 	sdp = strings.TrimPrefix(strings.TrimSpace(sdp), "a=")
 	candidate, err := ice.UnmarshalCandidate(sdp)
 	if err != nil {
@@ -151,20 +211,44 @@ func (l *IncomingMediaLeg) AddRemoteCandidate(sdp string) error {
 	return l.Agent.AddRemoteCandidate(candidate)
 }
 
-func (l *IncomingMediaLeg) Connect(ctx context.Context) error {
-	conn, err := l.Agent.Accept(ctx, l.remote.ICEUfrag, l.remote.ICEPwd)
+func (l *MediaLeg) Connect(ctx context.Context) error {
+	l.lock.Lock()
+	remote, dial := l.remote, l.dial
+	localKey, remoteKey := l.localKey, l.remoteKey
+	l.lock.Unlock()
+	if remote == nil || len(localKey.Key) == 0 || len(remoteKey.Key) == 0 {
+		return errors.New("RingRTC media leg has no remote parameters")
+	}
+	var conn *ice.Conn
+	var err error
+	if dial {
+		conn, err = l.Agent.Dial(ctx, remote.ICEUfrag, remote.ICEPwd)
+	} else {
+		conn, err = l.Agent.Accept(ctx, remote.ICEUfrag, remote.ICEPwd)
+	}
 	if err != nil {
-		return fmt.Errorf("accept RingRTC ICE connection: %w", err)
+		return fmt.Errorf("connect RingRTC ICE: %w", err)
 	}
 	mux := newMediaPacketMux(conn)
 	keys := srtp.SessionKeys{
-		LocalMasterKey: l.keys.Answer.Key, LocalMasterSalt: l.keys.Answer.Salt,
-		RemoteMasterKey: l.keys.Offer.Key, RemoteMasterSalt: l.keys.Offer.Salt,
+		LocalMasterKey: localKey.Key, LocalMasterSalt: localKey.Salt,
+		RemoteMasterKey: remoteKey.Key, RemoteMasterSalt: remoteKey.Salt,
 	}
 	srtpSession, err := srtp.NewSessionSRTP(mux.rtp, &srtp.Config{Keys: keys, Profile: srtp.ProtectionProfileAeadAes256Gcm})
 	if err != nil {
 		_ = mux.Close()
 		return fmt.Errorf("start RingRTC SRTP: %w", err)
+	}
+	remoteAudioSSRC, remoteVideoSSRC := uint32(CallerAudioSSRC), uint32(CallerVideoSSRC)
+	if dial {
+		remoteAudioSSRC, remoteVideoSSRC = CalleeAudioSSRC, CalleeVideoSSRC
+	}
+	for _, ssrc := range []uint32{RTPDataSSRC, remoteAudioSSRC, remoteVideoSSRC} {
+		if _, err = srtpSession.OpenReadStream(ssrc); err != nil {
+			_ = srtpSession.Close()
+			_ = mux.Close()
+			return fmt.Errorf("prepare RingRTC SRTP stream: %w", err)
+		}
 	}
 	srtcpSession, err := srtp.NewSessionSRTCP(mux.rtcp, &srtp.Config{Keys: keys, Profile: srtp.ProtectionProfileAeadAes256Gcm})
 	if err != nil {
@@ -178,7 +262,7 @@ func (l *IncomingMediaLeg) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (l *IncomingMediaLeg) AcceptRTP() (*RTPReader, uint32, error) {
+func (l *MediaLeg) AcceptRTP() (*RTPReader, uint32, error) {
 	l.lock.Lock()
 	session := l.SRTP
 	l.lock.Unlock()
@@ -195,7 +279,7 @@ func (l *IncomingMediaLeg) AcceptRTP() (*RTPReader, uint32, error) {
 // RTPReader opens the fixed RingRTC 1:1 stream identified by ssrc without
 // waiting for it to produce its first packet. RingRTC assigns 1002/1003 to
 // the caller's audio/video streams and 2002/2003 to the callee's streams.
-func (l *IncomingMediaLeg) RTPReader(ssrc uint32) (*RTPReader, error) {
+func (l *MediaLeg) RTPReader(ssrc uint32) (*RTPReader, error) {
 	l.lock.Lock()
 	session := l.SRTP
 	l.lock.Unlock()
@@ -209,7 +293,7 @@ func (l *IncomingMediaLeg) RTPReader(ssrc uint32) (*RTPReader, error) {
 	return &RTPReader{stream: stream}, nil
 }
 
-func (l *IncomingMediaLeg) WriteRTCP(packets []rtcp.Packet) error {
+func (l *MediaLeg) WriteRTCP(packets []rtcp.Packet) error {
 	l.lock.Lock()
 	session := l.SRTCP
 	l.lock.Unlock()
@@ -230,7 +314,7 @@ func (l *IncomingMediaLeg) WriteRTCP(packets []rtcp.Packet) error {
 
 // HandleRTCP drains all RingRTC SRTCP streams until the leg closes. Each RTCP
 // sender gets a Pion read stream, so accepted streams are drained concurrently.
-func (l *IncomingMediaLeg) HandleRTCP(ctx context.Context, handle func([]rtcp.Packet)) error {
+func (l *MediaLeg) HandleRTCP(ctx context.Context, handle func([]rtcp.Packet)) error {
 	l.lock.Lock()
 	session := l.SRTCP
 	l.lock.Unlock()
@@ -258,7 +342,7 @@ func (l *IncomingMediaLeg) HandleRTCP(ctx context.Context, handle func([]rtcp.Pa
 	}
 }
 
-func (l *IncomingMediaLeg) RTPWriter(payloadType uint8, ssrc uint32) (*RTPWriter, error) {
+func (l *MediaLeg) RTPWriter(payloadType uint8, ssrc uint32) (*RTPWriter, error) {
 	l.lock.Lock()
 	session := l.SRTP
 	l.lock.Unlock()
@@ -293,11 +377,16 @@ func (w *RTPWriter) WriteRTP(packet *rtp.Packet) error {
 	return err
 }
 
-func (l *IncomingMediaLeg) Close() error {
+func (l *MediaLeg) Close() error {
 	l.lock.Lock()
 	srtpSession, srtcpSession, mux := l.SRTP, l.SRTCP, l.mux
+	secret, callerIdentityKey, calleeIdentityKey := l.privateSecret, l.callerIdentityKey, l.calleeIdentityKey
 	l.SRTP, l.SRTCP, l.mux, l.conn = nil, nil, nil, nil
+	l.privateSecret, l.callerIdentityKey, l.calleeIdentityKey = nil, nil, nil
 	l.lock.Unlock()
+	clear(secret)
+	clear(callerIdentityKey)
+	clear(calleeIdentityKey)
 	if srtpSession != nil {
 		_ = srtpSession.Close()
 	}

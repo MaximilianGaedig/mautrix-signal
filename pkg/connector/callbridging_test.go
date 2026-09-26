@@ -9,6 +9,7 @@ import (
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/events"
+	"go.mau.fi/mautrix-signal/pkg/signalmeow/protobuf/signalpb"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/ringrtc"
 )
 
@@ -58,7 +59,7 @@ func TestSignalVideoCodec(t *testing.T) {
 	}
 }
 
-func TestSignalRingingOnlyResponsesAreBroadcast(t *testing.T) {
+func TestSignalCallControlResponsesAreBroadcast(t *testing.T) {
 	hangup := signalHangupMessage(42)
 	if hangup.GetHangup().GetId() != 42 || hangup.GetHangup().GetType() != 0 {
 		t.Fatalf("unexpected hangup: %+v", hangup.GetHangup())
@@ -69,6 +70,10 @@ func TestSignalRingingOnlyResponsesAreBroadcast(t *testing.T) {
 	busy := signalBusyMessage(43)
 	if busy.GetBusy().GetId() != 43 || busy.DestinationDeviceId != nil {
 		t.Fatalf("unexpected busy response: %+v", busy)
+	}
+	accepted := signalAcceptedMessage(44, 9)
+	if accepted.GetHangup().GetId() != 44 || accepted.GetHangup().GetType() != signalpb.CallMessage_Hangup_HANGUP_ACCEPTED || accepted.GetHangup().GetDeviceId() != 9 || accepted.DestinationDeviceId != nil {
+		t.Fatalf("unexpected accepted-elsewhere response: %+v", accepted)
 	}
 }
 
@@ -88,7 +93,8 @@ func TestSignalAnswerAndICEAreDeviceTargeted(t *testing.T) {
 		t.Fatalf("unexpected encoded answer: %+v", decodedAnswer)
 	}
 
-	ice := signalICEMessage(45, 8, "candidate:test")
+	device := uint32(8)
+	ice := signalICEMessage(45, &device, "candidate:test")
 	if ice.GetDestinationDeviceId() != 8 || len(ice.GetIceUpdate()) != 1 || ice.GetIceUpdate()[0].GetId() != 45 {
 		t.Fatalf("unexpected ICE targeting: %+v", ice)
 	}
@@ -98,5 +104,27 @@ func TestSignalAnswerAndICEAreDeviceTargeted(t *testing.T) {
 	}
 	if decodedICE.AddedV3 == nil || decodedICE.AddedV3.SDP != "candidate:test" {
 		t.Fatalf("unexpected encoded ICE update: %+v", decodedICE)
+	}
+	broadcastICE := signalICEMessage(45, nil, "candidate:test")
+	if broadcastICE.DestinationDeviceId != nil {
+		t.Fatal("caller ICE must be broadcast to all callee devices")
+	}
+}
+
+func TestSignalOfferIsBroadcastAndEncoded(t *testing.T) {
+	params := &ringrtc.ConnectionParametersV4{
+		ICEUfrag: "offer-ufrag", ICEPwd: "offer-password", PublicKey: make([]byte, 32),
+		ReceiveVideoCodecs: []ringrtc.VideoCodec{{Type: ringrtc.VideoCodecVP8}},
+	}
+	offer := signalOfferMessage(46, events.CallTypeVideo, params)
+	if offer.DestinationDeviceId != nil || offer.GetOffer().GetId() != 46 || offer.GetOffer().GetType() != signalpb.CallMessage_Offer_OFFER_VIDEO_CALL {
+		t.Fatalf("unexpected offer: %+v", offer)
+	}
+	decoded, err := ringrtc.DecodeOffer(offer.GetOffer().GetOpaque())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.V4 == nil || decoded.V4.ICEUfrag != params.ICEUfrag || len(decoded.V4.ReceiveVideoCodecs) != 1 {
+		t.Fatalf("unexpected encoded offer: %+v", decoded)
 	}
 }

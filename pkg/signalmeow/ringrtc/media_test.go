@@ -2,6 +2,9 @@ package ringrtc
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"net"
 	"testing"
 	"time"
@@ -10,6 +13,38 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/srtp/v3"
 )
+
+func TestOutgoingMediaLegKeyOrientation(t *testing.T) {
+	callerIdentity := bytes.Repeat([]byte{0x31}, 33)
+	calleeIdentity := bytes.Repeat([]byte{0x32}, 33)
+	leg, err := NewOutgoingMediaLeg(OutgoingMediaConfig{
+		CallerIdentityKey: callerIdentity, CalleeIdentityKey: calleeIdentity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leg.Close()
+	answerPrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &ConnectionParametersV4{
+		PublicKey: answerPrivate.PublicKey().Bytes(), ICEUfrag: "answer-ufrag", ICEPwd: "answer-password",
+	}
+	if err = leg.SetRemoteAnswer(remote); err != nil {
+		t.Fatal(err)
+	}
+	want, err := NegotiateSRTPKeys(answerPrivate.Bytes(), leg.Parameters.PublicKey, callerIdentity, calleeIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leg.localKey.Key, want.Offer.Key) || !bytes.Equal(leg.remoteKey.Key, want.Answer.Key) {
+		t.Fatal("outgoing leg installed caller/callee SRTP keys in the wrong direction")
+	}
+	if leg.privateSecret != nil || leg.callerIdentityKey != nil || leg.calleeIdentityKey != nil {
+		t.Fatal("outgoing key derivation inputs were retained after the answer")
+	}
+}
 
 func TestMediaPacketMuxAndStaticSRTP(t *testing.T) {
 	connA, connB := net.Pipe()
@@ -65,6 +100,22 @@ func TestMediaPacketMuxAndStaticSRTP(t *testing.T) {
 	}
 	if header.PayloadType != OpusPayloadType || !bytes.Equal(packet.Payload, payload) {
 		t.Fatalf("unexpected decrypted RTP: pt=%d payload=%x", header.PayloadType, packet.Payload)
+	}
+
+	acceptedCtx, cancelAccepted := context.WithTimeout(context.Background(), time.Second)
+	defer cancelAccepted()
+	if _, err = sessionB.OpenReadStream(RTPDataSSRC); err != nil {
+		t.Fatal(err)
+	}
+	acceptedResult := make(chan error, 1)
+	go func() {
+		acceptedResult <- (&MediaLeg{SRTP: sessionB}).WaitAccepted(acceptedCtx, 0xCA111D)
+	}()
+	if err = (&MediaLeg{SRTP: sessionA}).SendAccepted(0xCA111D, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-acceptedResult; err != nil {
+		t.Fatalf("encrypted RingRTC acceptance handshake failed: %v", err)
 	}
 
 	rtcpA, err := srtp.NewSessionSRTCP(muxA.rtcp, configA)
