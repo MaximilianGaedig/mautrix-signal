@@ -46,6 +46,8 @@ type IncomingMediaConfig struct {
 	ICEServers        []*stun.URI
 	VideoCodec        VideoCodecType
 	OnCandidate       func(string)
+	// IncludeLoopback offers 127.0.0.1 as an ICE candidate; see OutgoingMediaConfig.
+	IncludeLoopback bool
 }
 
 type OutgoingMediaConfig struct {
@@ -54,6 +56,10 @@ type OutgoingMediaConfig struct {
 	ICEServers        []*stun.URI
 	VideoCodec        VideoCodecType
 	OnCandidate       func(string)
+	// IncludeLoopback offers 127.0.0.1 as an ICE candidate. Only tests set it, so that two legs
+	// can find each other on a machine with no usable interface; a real call would never want a
+	// candidate the peer cannot reach.
+	IncludeLoopback bool
 }
 
 // MediaLeg is the controlled ICE + static-key SRTP side of a RingRTC call.
@@ -90,7 +96,7 @@ func NewIncomingMediaLeg(cfg IncomingMediaConfig) (*MediaLeg, error) {
 	if cfg.Remote == nil || len(cfg.Remote.PublicKey) != 32 || cfg.Remote.ICEUfrag == "" || cfg.Remote.ICEPwd == "" {
 		return nil, errors.New("incomplete remote RingRTC connection parameters")
 	}
-	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate)
+	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate, cfg.IncludeLoopback)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +112,7 @@ func NewIncomingMediaLeg(cfg IncomingMediaConfig) (*MediaLeg, error) {
 }
 
 func NewOutgoingMediaLeg(cfg OutgoingMediaConfig) (*MediaLeg, error) {
-	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate)
+	leg, secret, err := newMediaLeg(cfg.ICEServers, cfg.VideoCodec, cfg.OnCandidate, cfg.IncludeLoopback)
 	if err != nil {
 		return nil, err
 	}
@@ -117,12 +123,24 @@ func NewOutgoingMediaLeg(cfg OutgoingMediaConfig) (*MediaLeg, error) {
 	return leg, nil
 }
 
-func newMediaLeg(iceServers []*stun.URI, videoCodec VideoCodecType, onCandidate func(string)) (*MediaLeg, []byte, error) {
+func newMediaLeg(iceServers []*stun.URI, videoCodec VideoCodecType, onCandidate func(string), includeLoopback bool) (*MediaLeg, []byte, error) {
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate RingRTC media key: %w", err)
 	}
-	agent, err := ice.NewAgent(&ice.AgentConfig{Urls: iceServers})
+	agentCfg := &ice.AgentConfig{
+		Urls: iceServers,
+		// Without this the agent gathers nothing at all - pion treats an empty NetworkTypes as
+		// "no networks" rather than "every network", so every candidate list came back empty and
+		// no call could ever connect.
+		NetworkTypes: []ice.NetworkType{
+			ice.NetworkTypeUDP4, ice.NetworkTypeUDP6,
+		},
+	}
+	if includeLoopback {
+		agentCfg.IncludeLoopback = true
+	}
+	agent, err := ice.NewAgent(agentCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create RingRTC ICE agent: %w", err)
 	}
