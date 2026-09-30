@@ -43,6 +43,7 @@ type SignalClient struct {
 	queueEmptyWaiter *exsync.Event
 	cancelChatSync   atomic.Pointer[context.CancelFunc]
 	callBridge       signalCallBridge
+	callLog          *callLogger
 }
 
 var (

@@ -821,6 +821,11 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 				})
 			}
 		}
+	case *signalpb.SyncMessage_CallEvent_:
+		handlerSuccess = cli.handleEvent(&events.CallSync{
+			Timestamp: envelope.GetClientTimestamp(),
+			Raw:       content.CallEvent,
+		})
 	case *signalpb.SyncMessage_DeleteForMe_:
 		handlerSuccess = cli.handleEvent(&events.DeleteForMe{
 			Timestamp:               envelope.GetClientTimestamp(),

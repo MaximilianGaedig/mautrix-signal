@@ -63,17 +63,20 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 		return s.handleSignalMessageRequestResponse(evt)
 	case *events.Call:
 		s.logCallSignal(evt)
+		if evt.MessageType == "" {
+			// A group call started or ended.
+			return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, s.wrapGroupCallEvent(evt)).Success
+		}
 		if s.Main.Config.CallBridging {
+			if isBridgeableOffer(evt) {
+				// The call rings in Matrix as a real call, so it isn't logged as well.
+				s.callLog.markBridged(evt.ID)
+			}
 			s.handleSignalCall(evt)
-			return true
 		}
-		// Preserve the existing user-visible behavior: only offers and hangups
-		// become timeline notices. Answer, ICE, busy and opaque messages are
-		// read-only signalling observations for now.
-		if evt.MessageType == "" || evt.MessageType == events.CallMessageOffer || evt.MessageType == events.CallMessageHangup {
-			return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, s.wrapCallEvent(evt)).Success
-		}
-		return true
+		return s.queueCallLog(s.callLog.fromSignal(evt))
+	case *events.CallSync:
+		return s.queueCallLog(s.callLog.fromSync(evt))
 	case *events.ContactList:
 		s.handleSignalContactList(evt)
 	case *events.ChatSettings:
@@ -126,7 +129,17 @@ func (s *SignalClient) logCallSignal(evt *events.Call) {
 	log.Msg("Received Signal call signalling")
 }
 
-func (s *SignalClient) wrapCallEvent(evt *events.Call) bridgev2.RemoteMessage {
+func (s *SignalClient) queueCallLog(evts []bridgev2.RemoteEvent) bool {
+	ok := true
+	for _, evt := range evts {
+		ok = s.Main.Bridge.QueueRemoteEvent(s.UserLogin, evt).Success && ok
+	}
+	return ok
+}
+
+// wrapGroupCallEvent is the notice for a group call starting or ending. It's a notice rather than a call log
+// entry: a group call update says neither who was rung, nor whether it has video, nor who joined.
+func (s *SignalClient) wrapGroupCallEvent(evt *events.Call) bridgev2.RemoteMessage {
 	return &simplevent.Message[*events.Call]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
@@ -143,24 +156,26 @@ func (s *SignalClient) wrapCallEvent(evt *events.Call) bridgev2.RemoteMessage {
 		Data: evt,
 		ID:   signalid.MakeMessageID(evt.Info.Sender, evt.Timestamp),
 
-		ConvertMessageFunc: convertCallEvent,
+		ConvertMessageFunc: convertGroupCallEvent,
 	}
 }
 
-func convertCallEvent(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *events.Call) (*bridgev2.ConvertedMessage, error) {
+func groupCallText(started bool) string {
+	if started {
+		return "Started a group call"
+	}
+	return "Group call ended"
+}
+
+func convertGroupCallEvent(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *events.Call) (*bridgev2.ConvertedMessage, error) {
 	content := &event.MessageEventContent{
 		MsgType: event.MsgNotice,
+		Body:    groupCallText(data.IsRinging),
 	}
 	if data.IsRinging {
-		content.Body = "Incoming call"
-		if userID, _, _ := signalid.ParsePortalID(portal.ID); !userID.IsEmpty() {
-			content.MsgType = event.MsgText
-		}
 		content.BeeperActionMessage = &event.BeeperActionMessage{
 			Type: event.BeeperActionMessageCall,
 		}
-	} else {
-		content.Body = "Call ended"
 	}
 	return &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{{

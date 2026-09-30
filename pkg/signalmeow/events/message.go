@@ -34,6 +34,7 @@ func (*DecryptionError) isSignalEvent()        {}
 func (*Receipt) isSignalEvent()                {}
 func (*ReadSelf) isSignalEvent()               {}
 func (*Call) isSignalEvent()                   {}
+func (*CallSync) isSignalEvent()               {}
 func (*ContactList) isSignalEvent()            {}
 func (*ChatSettings) isSignalEvent()           {}
 func (*ACIFound) isSignalEvent()               {}
@@ -126,6 +127,12 @@ func (c *Call) ConnectionParameters() *ringrtc.ConnectionParametersV4 {
 		return c.Answer.V4
 	}
 	return nil
+}
+
+// CallSync is a call that another device of the user answered, declined or placed, as that device reported it.
+type CallSync struct {
+	Timestamp uint64
+	Raw       *signalpb.SyncMessage_CallEvent
 }
 
 type ContactList struct {

@@ -133,10 +133,17 @@ type signalRemoteCandidate struct {
 	sdp    string
 }
 
+// isBridgeableOffer is whether call bridging takes on this offer.
+func isBridgeableOffer(evt *events.Call) bool {
+	return evt.MessageType == events.CallMessageOffer &&
+		(evt.Type == events.CallTypeAudio || evt.Type == events.CallTypeVideo) &&
+		evt.Offer != nil && evt.Offer.V4 != nil && evt.ParseError == ""
+}
+
 func (s *SignalClient) handleSignalCall(evt *events.Call) {
 	switch evt.MessageType {
 	case events.CallMessageOffer:
-		if (evt.Type != events.CallTypeAudio && evt.Type != events.CallTypeVideo) || evt.Offer == nil || evt.Offer.V4 == nil || evt.ParseError != "" {
+		if !isBridgeableOffer(evt) {
 			return
 		}
 		go s.callBridge.startIncoming(context.WithoutCancel(s.Main.Bridge.BackgroundCtx), evt)

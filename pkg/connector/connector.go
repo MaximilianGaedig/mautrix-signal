@@ -121,6 +121,7 @@ func (s *SignalConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Use
 		queueEmptyWaiter: exsync.NewEvent(),
 	}
 	sc.callBridge.client = sc
+	sc.callLog = newCallLogger(aci, sc.makePortalKey, sc.makeEventSender)
 	if device != nil {
 		sc.Client = signalmeow.NewClient(
 			device,
