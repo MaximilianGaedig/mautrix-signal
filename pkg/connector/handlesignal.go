@@ -225,6 +225,9 @@ func (evt *Bv2ChatEvent) GetType() bridgev2.RemoteEventType {
 	switch innerEvt := evt.Event.(type) {
 	case *signalpb.DataMessage:
 		switch {
+		// Before the protocol version check: pins may require a newer version than we know, but we handle them.
+		case isPinChange(innerEvt):
+			return bridgev2.RemoteEventChatInfoChange
 		case innerEvt.Body != nil, innerEvt.Attachments != nil, innerEvt.Contact != nil, innerEvt.Sticker != nil,
 			innerEvt.Payment != nil, innerEvt.GiftBadge != nil, innerEvt.PollCreate != nil, innerEvt.PollVote != nil,
 			innerEvt.GetRequiredProtocolVersion() > uint32(signalpb.DataMessage_CURRENT),
@@ -250,6 +253,9 @@ func (evt *Bv2ChatEvent) GetType() bridgev2.RemoteEventType {
 
 func (evt *Bv2ChatEvent) GetChatInfoChange(ctx context.Context) (*bridgev2.ChatInfoChange, error) {
 	dm, _ := evt.Event.(*signalpb.DataMessage)
+	if dm != nil && isPinChange(dm) {
+		return pinChange(dm, evt.Info.Sender), nil
+	}
 	gv2 := dm.GetGroupV2()
 	if gv2 == nil || gv2.GroupChange == nil {
 		return nil, fmt.Errorf("GetChatInfoChange() called for non-GroupChange event")
