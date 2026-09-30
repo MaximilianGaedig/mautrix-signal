@@ -38,7 +38,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_07_22"
+	base := "fi.mau.signal.capabilities.2026_09_30"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -157,7 +157,7 @@ var signalCaps = &event.RoomFeatures{
 	MaxTextLength:        MaxTextLength, // TODO support arbitrary sized text messages with files
 	LocationMessage:      event.CapLevelPartialSupport,
 	Poll:                 event.CapLevelFullySupported,
-	PollEnd:              event.CapLevelUnsupported,
+	PollEnd:              event.CapLevelFullySupported,
 	PollHiddenVotes:      event.CapLevelUnsupported,
 	PollDuplicateOptions: event.CapLevelFullySupported,
 	PollMaxOptions:       10,
