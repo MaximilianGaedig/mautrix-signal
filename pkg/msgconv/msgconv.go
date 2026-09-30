@@ -49,6 +49,9 @@ type MessageConverter struct {
 	DisappearViewOnce bool
 	DirectMedia       bool
 	ExtEvPolls        bool
+
+	// storyExists overrides the database lookup for bridged stories (used by tests).
+	storyExists func(ctx context.Context, id networkid.MessageID) bool
 }
 
 func NewMessageConverter(br *bridgev2.Bridge) *MessageConverter {

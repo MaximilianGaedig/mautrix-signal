@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/exmime"
 	"go.mau.fi/util/ffmpeg"
@@ -57,8 +58,15 @@ func (mc *MessageConverter) ToSignal(
 		Preview: mc.convertURLPreviewToSignal(ctx, content),
 	}
 	if replyTo != nil {
+		var ownACI uuid.UUID
+		if client != nil && client.Store != nil {
+			ownACI = client.Store.ACI
+		}
 		authorACI, messageID, err := signalid.ParseMessageID(replyTo.ID)
-		if err == nil {
+		if storyContext := StoryContextFor(replyTo, ownACI); storyContext != nil {
+			// A reply to a bridged story is a story reply, not a quote.
+			dm.StoryContext = storyContext
+		} else if err == nil {
 			dm.Quote = &signalpb.DataMessage_Quote{
 				Id:              proto.Uint64(messageID),
 				AuthorAciBinary: authorACI[:],
@@ -226,4 +234,22 @@ func parseGeoURI(uri string) (lat, long string, err error) {
 		long = splitCoordinates[1]
 	}
 	return
+}
+
+func isStoryMessage(msg *database.Message) bool {
+	meta, ok := msg.Metadata.(*signalid.MessageMetadata)
+	return ok && meta.IsStory
+}
+
+// StoryContextFor returns the story context to send with a reaction or reply to the given
+// message if it is a bridged story by someone else, or nil.
+func StoryContextFor(msg *database.Message, ownACI uuid.UUID) *signalpb.DataMessage_StoryContext {
+	if msg == nil || !isStoryMessage(msg) {
+		return nil
+	}
+	author, ts, err := signalid.ParseMessageID(msg.ID)
+	if err != nil || author == ownACI {
+		return nil
+	}
+	return &signalpb.DataMessage_StoryContext{AuthorAciBinary: author[:], SentTimestamp: proto.Uint64(ts)}
 }

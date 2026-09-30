@@ -37,6 +37,7 @@ import (
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
+	"go.mau.fi/mautrix-signal/pkg/msgconv"
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/protobuf/signalpb"
@@ -239,6 +240,8 @@ func (s *SignalClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 	err = s.sendMessage(ctx, msg.Portal.ID, signalmeow.WrapDataMessage(&signalpb.DataMessage{
 		Timestamp:               proto.Uint64(ts),
 		RequiredProtocolVersion: proto.Uint32(uint32(signalpb.DataMessage_REACTIONS)),
+		// Reactions to bridged stories are story reactions.
+		StoryContext: msgconv.StoryContextFor(msg.TargetMessage, s.Client.Store.ACI),
 		Reaction: &signalpb.DataMessage_Reaction{
 			Emoji:                 proto.String(msg.PreHandleResp.Emoji),
 			Remove:                proto.Bool(false),

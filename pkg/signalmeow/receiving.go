@@ -662,7 +662,10 @@ func (cli *Client) handleDecryptedResult(
 	case *signalpb.Content_NullMessage:
 		// This is intentionally ignored
 	case *signalpb.Content_StoryMessage:
-		// This is also ignored for now
+		handlerSuccess = cli.incomingStoryMessage(
+			ctx, content.StoryMessage, theirServiceID.UUID, theirServiceID,
+			envelope.GetClientTimestamp(), envelope.GetServerTimestamp(), isBlocked,
+		)
 	default:
 		if rawContent.PniSignatureMessage == nil && rawContent.SenderKeyDistributionMessage == nil {
 			log.Warn().Type("content_type", content).Msg("Unrecognized message content type")
@@ -727,7 +730,16 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 		}
 	case *signalpb.SyncMessage_Sent_:
 		syncSent := content.Sent
-		if syncSent.GetMessage() != nil || syncSent.GetEditMessage() != nil {
+		if syncSent.GetStoryMessage() != nil {
+			// Own stories are only bridged when they were posted to a group, because
+			// stories posted to distribution lists have no single chat to go to.
+			if syncSent.GetStoryMessage().GetGroup() != nil {
+				handlerSuccess = cli.incomingStoryMessage(
+					ctx, syncSent.GetStoryMessage(), cli.Store.ACI, cli.Store.ACIServiceID(),
+					syncSent.GetTimestamp(), envelope.GetServerTimestamp(), false,
+				)
+			}
+		} else if syncSent.GetMessage() != nil || syncSent.GetEditMessage() != nil {
 			syncDestinationServiceID, err := ParseStringOrBinaryServiceID(syncSent.GetDestinationServiceId(), syncSent.GetDestinationServiceIdBinary())
 			if err != nil && !errors.Is(err, ErrEmptyUUIDInput) {
 				log.Err(err).Msg("Sync message destination parse error")
@@ -1008,6 +1020,52 @@ func (cli *Client) incomingDataMessage(
 			Event: dataMessage,
 		}), true
 	}
+}
+
+func (cli *Client) incomingStoryMessage(
+	ctx context.Context,
+	story *signalpb.StoryMessage,
+	authorACI uuid.UUID,
+	chatRecipient libsignalgo.ServiceID,
+	timestamp uint64,
+	serverTimestamp uint64,
+	isBlocked bool,
+) (handlerSuccess bool) {
+	if story.GetProfileKey() != nil {
+		err := cli.Store.RecipientStore.StoreProfileKey(ctx, authorACI, libsignalgo.ProfileKey(story.GetProfileKey()))
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Msg("StoreProfileKey error")
+			return false
+		}
+	}
+	var groupID types.GroupIdentifier
+	var groupRevision uint32
+	if story.GetGroup() != nil {
+		masterKey := masterKeyFromBytes(libsignalgo.GroupMasterKey(story.GetGroup().GetMasterKey()))
+		var err error
+		groupID, err = cli.StoreMasterKey(ctx, masterKey)
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Msg("StoreMasterKey error")
+			return false
+		}
+		groupRevision = story.GetGroup().GetRevision()
+	} else if isBlocked {
+		zerolog.Ctx(ctx).Debug().Msg("Dropping story from blocked user")
+		return true
+	}
+	if timestamp == 0 {
+		zerolog.Ctx(ctx).Warn().Msg("Dropping story without a timestamp")
+		return true
+	}
+	return cli.handleEvent(&events.ChatEvent{
+		Info: events.MessageInfo{
+			Sender:          authorACI,
+			ChatID:          groupOrUserID(groupID, chatRecipient),
+			GroupRevision:   groupRevision,
+			ServerTimestamp: serverTimestamp,
+		},
+		Event: &signalpb.StoryEvent{Story: story, Timestamp: timestamp},
+	})
 }
 
 func (cli *Client) sendDeliveryReceipts(ctx context.Context, deliveredTimestamps []uint64, senderUUID uuid.UUID) error {

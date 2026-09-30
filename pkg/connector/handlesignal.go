@@ -206,6 +206,10 @@ func convertDecryptionError(_ context.Context, _ *bridgev2.Portal, _ bridgev2.Ma
 type Bv2ChatEvent struct {
 	*events.ChatEvent
 	s *SignalClient
+
+	// storyReactionUnbridged is set in PreHandle for a reaction to a story that isn't in the
+	// database. There's no message to react to, so it is bridged as a short notice instead.
+	storyReactionUnbridged bool
 }
 
 var (
@@ -228,6 +232,11 @@ func (evt *Bv2ChatEvent) GetType() bridgev2.RemoteEventType {
 		// Before the protocol version check: pins may require a newer version than we know, but we handle them.
 		case isPinChange(innerEvt):
 			return bridgev2.RemoteEventChatInfoChange
+		case msgconv.IsStoryReaction(innerEvt) && !innerEvt.GetReaction().GetRemove():
+			if evt.storyReactionUnbridged {
+				return bridgev2.RemoteEventMessage
+			}
+			return bridgev2.RemoteEventReaction
 		case innerEvt.Body != nil, innerEvt.Attachments != nil, innerEvt.Contact != nil, innerEvt.Sticker != nil,
 			innerEvt.Payment != nil, innerEvt.GiftBadge != nil, innerEvt.PollCreate != nil, innerEvt.PollVote != nil, innerEvt.PollTerminate != nil,
 			innerEvt.GetRequiredProtocolVersion() > uint32(signalpb.DataMessage_CURRENT),
@@ -247,6 +256,8 @@ func (evt *Bv2ChatEvent) GetType() bridgev2.RemoteEventType {
 		return bridgev2.RemoteEventEdit
 	case *signalpb.TypingMessage:
 		return bridgev2.RemoteEventTyping
+	case *signalpb.StoryEvent:
+		return bridgev2.RemoteEventMessage
 	}
 	return bridgev2.RemoteEventUnknown
 }
@@ -269,17 +280,29 @@ func (evt *Bv2ChatEvent) GetChatInfoChange(ctx context.Context) (*bridgev2.ChatI
 }
 
 func (evt *Bv2ChatEvent) PreHandle(ctx context.Context, portal *bridgev2.Portal) {
-	dataMsg, ok := evt.Event.(*signalpb.DataMessage)
-	if !ok || dataMsg.GroupV2 == nil {
+	var groupV2 *signalpb.GroupContextV2
+	var msgTS uint64
+	switch innerEvt := evt.Event.(type) {
+	case *signalpb.DataMessage:
+		groupV2 = innerEvt.GetGroupV2()
+		msgTS = innerEvt.GetTimestamp()
+		if msgconv.IsStoryReaction(innerEvt) && !innerEvt.GetReaction().GetRemove() {
+			evt.storyReactionUnbridged = !evt.s.Main.MsgConv.StoryBridged(ctx, portal, innerEvt)
+		}
+	case *signalpb.StoryEvent:
+		groupV2 = innerEvt.Story.GetGroup()
+		msgTS = innerEvt.Timestamp
+	}
+	if groupV2 == nil {
 		return
 	}
 	portalRev := portal.Metadata.(*signalid.PortalMetadata).Revision
 	if evt.Info.GroupRevision > portalRev {
 		toRevision := evt.Info.GroupRevision
-		if dataMsg.GetGroupV2().GetGroupChange() != nil {
+		if groupV2.GetGroupChange() != nil {
 			toRevision--
 		}
-		evt.s.catchUpGroup(ctx, portal, portalRev, toRevision, dataMsg.GetTimestamp())
+		evt.s.catchUpGroup(ctx, portal, portalRev, toRevision, msgTS)
 	}
 }
 
@@ -336,6 +359,8 @@ func (evt *Bv2ChatEvent) getDataMsgTimestamp() uint64 {
 		return innerEvt.GetTimestamp()
 	case *signalpb.EditMessage:
 		return innerEvt.GetDataMessage().GetTimestamp()
+	case *signalpb.StoryEvent:
+		return innerEvt.Timestamp
 	default:
 		return 0
 	}
@@ -392,6 +417,9 @@ func (evt *Bv2ChatEvent) GetRemovedEmojiID() networkid.EmojiID {
 }
 
 func (evt *Bv2ChatEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
+	if story, ok := evt.Event.(*signalpb.StoryEvent); ok {
+		return evt.s.Main.MsgConv.StoryToMatrix(ctx, evt.s.Client, portal, intent, story), nil
+	}
 	dataMsg, ok := evt.Event.(*signalpb.DataMessage)
 	if !ok {
 		return nil, fmt.Errorf("ConvertMessage() called for non-DataMessage event")

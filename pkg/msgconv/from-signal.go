@@ -110,6 +110,18 @@ func (mc *MessageConverter) ToMatrix(
 		cm.Disappear.Type = event.DisappearingTypeAfterRead
 		cm.Disappear.Timer = time.Duration(dm.GetExpireTimer()) * time.Second
 	}
+	var ownACI uuid.UUID
+	if client != nil && client.Store != nil {
+		ownACI = client.Store.ACI
+	}
+	if IsStoryReaction(dm) {
+		// Reactions to bridged stories never get here, they're Matrix reactions.
+		part := mc.storyReactionNotice(ctx, dm, ownACI)
+		part.ID = signalid.MakeMessagePartID(0)
+		part.DBMetadata = &signalid.MessageMetadata{}
+		cm.Parts = append(cm.Parts, part)
+		return cm
+	}
 	if dm.Sticker != nil {
 		cm.Parts = append(cm.Parts, mc.convertStickerToMatrix(ctx, dm.Sticker, attMap))
 		// Don't allow any other parts in a sticker message
@@ -176,6 +188,9 @@ func (mc *MessageConverter) ToMatrix(
 				Body:    "This is a view-once message. It will disappear in 5 minutes.",
 			},
 		})
+	}
+	if dm.StoryContext != nil {
+		mc.applyStoryContext(ctx, cm, dm.StoryContext, ownACI)
 	}
 	cm.MergeCaption()
 	for i, part := range cm.Parts {
