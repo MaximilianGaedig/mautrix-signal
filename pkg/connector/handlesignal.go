@@ -514,7 +514,8 @@ type Bv2Receipt struct {
 
 func (b *Bv2Receipt) GetType() bridgev2.RemoteEventType {
 	switch b.Type {
-	case signalpb.ReceiptMessage_READ:
+	case signalpb.ReceiptMessage_READ, signalpb.ReceiptMessage_VIEWED:
+		// Viewing a message (opening a view-once, playing a voice note) implies having read it.
 		return bridgev2.RemoteEventReadReceipt
 	case signalpb.ReceiptMessage_DELIVERY:
 		return bridgev2.RemoteEventDeliveryReceipt
