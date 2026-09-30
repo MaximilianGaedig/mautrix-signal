@@ -534,12 +534,7 @@ func (cli *Client) handleDecryptedResult(
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to unmarshal decryption error message")
 		} else {
-			go func() {
-				err := cli.handleRetryRequest(ctx, result, dem)
-				if err != nil {
-					log.Err(err).Msg("Failed to handle decryption error message in background")
-				}
-			}()
+			go cli.tryHandleRetryRequest(ctx, result, dem)
 		}
 		return
 	} else if result.Unencrypted {
@@ -718,13 +713,13 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 			log.Err(err).Msg("Failed to save device after receiving master key")
 		} else {
 			log.Info().Msg("Received master key")
-			go cli.SyncStorage(ctx)
+			cli.QueueStorageSync(ctx)
 		}
 	case *signalpb.SyncMessage_FetchLatest_:
 		switch content.FetchLatest.GetType() {
 		case signalpb.SyncMessage_FetchLatest_STORAGE_MANIFEST:
 			log.Debug().Msg("Received storage manifest fetch latest notice")
-			go cli.SyncStorage(ctx)
+			cli.QueueStorageSync(ctx)
 		default:
 			log.Debug().
 				Stringer("fetch_latest_type", content.FetchLatest.GetType()).
