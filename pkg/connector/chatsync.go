@@ -38,10 +38,22 @@ func (s *SignalClient) stopChatSync() {
 	}
 }
 
-func (s *SignalClient) syncChats(ctx context.Context, cancel context.CancelFunc) {
+var _ bridgev2.ChatListSyncingNetworkAPI = (*SignalClient)(nil)
+
+// SyncChatList goes over the chats from the link-time transfer archive again, whether or not they were
+// already synced, creating a room for any that has none (e.g. after delete-portal). Chats started after
+// linking are not in the archive; they get a room again with their next message.
+func (s *SignalClient) SyncChatList(ctx context.Context) error {
+	// syncChats cancels the context it is given when it returns, so it gets its own.
+	syncCtx, cancel := context.WithCancel(ctx)
+	s.syncChats(syncCtx, cancel, true)
+	return ctx.Err()
+}
+
+func (s *SignalClient) syncChats(ctx context.Context, cancel context.CancelFunc, force bool) {
 	defer cancel()
 
-	if s.UserLogin.Metadata.(*signalid.UserLoginMetadata).ChatsSynced {
+	if !force && s.UserLogin.Metadata.(*signalid.UserLoginMetadata).ChatsSynced {
 		return
 	}
 

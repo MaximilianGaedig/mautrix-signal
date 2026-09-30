@@ -338,7 +338,7 @@ func (s *SignalClient) tryConnect(ctx context.Context, retryCount int, noLoginSy
 	}
 	go s.bridgeStateLoop(ch)
 	if noLoginSync {
-		go s.syncChats(syncCtx, cancel)
+		go s.syncChats(syncCtx, cancel, false)
 	} else {
 		// TODO it would be more proper to only connect after syncing,
 		//      but currently syncing will fetch group info online, so it has to be connected.
@@ -349,7 +349,7 @@ func (s *SignalClient) tryConnect(ctx context.Context, retryCount int, noLoginSy
 				} else {
 					s.UserLogin.Log.Warn().Msg("No master key for storage sync before backup sync")
 				}
-				s.syncChats(syncCtx, cancel)
+				s.syncChats(syncCtx, cancel, false)
 			}()
 		} else {
 			cancel()
