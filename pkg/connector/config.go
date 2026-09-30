@@ -24,6 +24,7 @@ import (
 	up "go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
 
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
@@ -44,6 +45,8 @@ type SignalConfig struct {
 	DisappearViewOnce     bool                `yaml:"disappear_view_once"`
 	ExtEvPolls            bool                `yaml:"extev_polls"`
 	CallBridging          bool                `yaml:"call_bridging"`
+	PinnedTag             event.RoomTag       `yaml:"pinned_tag"`
+	ArchiveTag            event.RoomTag       `yaml:"archive_tag"`
 
 	displaynameTemplate *template.Template `yaml:"-"`
 }
@@ -107,6 +110,8 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "disappear_view_once")
 	helper.Copy(up.Bool, "extev_polls")
 	helper.Copy(up.Bool, "call_bridging")
+	helper.Copy(up.Str|up.Null, "pinned_tag")
+	helper.Copy(up.Str|up.Null, "archive_tag")
 }
 
 func (s *SignalConnector) GetConfig() (string, any, up.Upgrader) {

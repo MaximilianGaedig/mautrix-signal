@@ -72,6 +72,7 @@ func (cli *Client) StorageSync(ctx context.Context) {
 func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdate) error {
 	log := zerolog.Ctx(ctx)
 	var changedContacts []*types.Recipient
+	chatSettingsSeen := false
 	for _, record := range update.NewRecords {
 		switch data := record.StorageRecord.GetRecord().(type) {
 		case *signalpb.StorageRecord_Contact:
@@ -89,6 +90,10 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 				continue
 			}
 			contact := data.Contact
+			if chatID := contactChatID(aci, pni); chatID != "" {
+				cli.recordChatSettings(chatID, contactRecordSettings(contact))
+				chatSettingsSeen = true
+			}
 			topLevelChanged := false
 			recipient, err := cli.Store.RecipientStore.LoadAndUpdateRecipient(ctx, aci, pni, func(recipient *types.Recipient) (changed bool, err error) {
 				if len(contact.ProfileKey) == libsignalgo.ProfileKeyLength {
@@ -144,9 +149,13 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 				return fmt.Errorf("failed to store group master key for %s: %w", groupID, err)
 			}
 			log.Debug().Stringer("group_id", groupID).Msg("Stored group master key from storage service")
+			cli.recordChatSettings(string(groupID), groupRecordSettings(data.GroupV2))
+			chatSettingsSeen = true
 		case *signalpb.StorageRecord_Account:
 			log.Trace().Any("account_record", data.Account).Msg("Found account record")
 			cli.Store.AccountRecord = data.Account
+			cli.recordPinnedChats(pinnedChatIDs(data.Account, groupIDFromMasterKeyBytes))
+			chatSettingsSeen = true
 			if len(data.Account.ProfileKey) == libsignalgo.ProfileKeyLength {
 				err := cli.Store.RecipientStore.StoreProfileKey(ctx, cli.Store.ACI, libsignalgo.ProfileKey(data.Account.ProfileKey))
 				if err != nil {
@@ -169,6 +178,9 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 			Contacts: changedContacts,
 			IsFromDB: true,
 		})
+	}
+	if chatSettingsSeen {
+		go cli.handleEvent(cli.chatSettingsEvent())
 	}
 	return nil
 }

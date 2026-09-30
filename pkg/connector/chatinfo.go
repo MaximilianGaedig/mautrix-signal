@@ -471,19 +471,22 @@ func (s *SignalClient) makeCreateDMResponse(ctx context.Context, recipient *type
 		}
 		serviceID = libsignalgo.NewACIServiceID(recipient.ACI)
 	}
-	return &bridgev2.CreateChatResponse{
-		PortalKey: s.makeDMPortalKey(serviceID),
-		PortalInfo: &bridgev2.ChatInfo{
-			Name:    namePtr,
-			Avatar:  avatar,
-			Topic:   &topic,
-			Members: members,
-			Type:    ptr.Ptr(database.RoomTypeDM),
+	dmKey := s.makeDMPortalKey(serviceID)
+	info := &bridgev2.ChatInfo{
+		Name:    namePtr,
+		Avatar:  avatar,
+		Topic:   &topic,
+		Members: members,
+		Type:    ptr.Ptr(database.RoomTypeDM),
 
-			MessageRequest: ptr.Ptr(recipient.ACI != uuid.Nil && recipient.ProbablyMessageRequest()),
-			CanBackfill:    backupChat != nil,
-			ExtraUpdates:   updatePortalSyncMeta,
-		},
+		MessageRequest: ptr.Ptr(recipient.ACI != uuid.Nil && recipient.ProbablyMessageRequest()),
+		CanBackfill:    backupChat != nil,
+		ExtraUpdates:   updatePortalSyncMeta,
+	}
+	s.addChatSettings(info, serviceID.String())
+	return &bridgev2.CreateChatResponse{
+		PortalKey:  dmKey,
+		PortalInfo: info,
 	}
 }
 

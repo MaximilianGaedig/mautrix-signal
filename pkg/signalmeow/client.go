@@ -73,6 +73,10 @@ type Client struct {
 	storageSyncLock   sync.Mutex
 	storageSyncQueued atomic.Bool
 
+	chatSettingsLock sync.RWMutex
+	chatSettings     map[string]types.ChatSettings
+	chatPinned       map[string]struct{}
+
 	writeCallbackCounter chan time.Time
 }
 

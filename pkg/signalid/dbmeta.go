@@ -18,6 +18,8 @@ package signalid
 
 import (
 	"go.mau.fi/util/jsontime"
+
+	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
 )
 
 type PortalMetadata struct {
@@ -25,6 +27,9 @@ type PortalMetadata struct {
 	ExpirationTimerVersion uint32 `json:"expiration_timer_version,omitempty"`
 	// Lazy resync tracking
 	LastSync jsontime.Unix `json:"last_sync,omitempty"`
+	// Chat settings (mute, archive, unread, pin) as last seen in the Signal storage service.
+	// Used to only bridge changes. Nil means everything was at its default.
+	Settings *types.ChatSettings `json:"settings,omitempty"`
 }
 
 type MessageMetadata struct {

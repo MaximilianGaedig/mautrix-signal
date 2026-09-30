@@ -160,7 +160,7 @@ func (s *SignalClient) wrapGroupInfo(ctx context.Context, groupInfo *signalmeow.
 	if err != nil {
 		return nil, fmt.Errorf("failed to make group avatar: %w", err)
 	}
-	return &bridgev2.ChatInfo{
+	info := &bridgev2.ChatInfo{
 		Name:   &groupInfo.Title,
 		Topic:  &groupInfo.Description,
 		Avatar: avatar,
@@ -175,7 +175,9 @@ func (s *SignalClient) wrapGroupInfo(ctx context.Context, groupInfo *signalmeow.
 		CanBackfill:  backupChat != nil,
 
 		ExcludeChangesFromTimeline: true,
-	}, nil
+	}
+	s.addChatSettings(info, string(groupInfo.GroupIdentifier))
+	return info, nil
 }
 
 func addMemberToMap(mc map[networkid.UserID]bridgev2.ChatMember, member bridgev2.ChatMember) {

@@ -28,3 +28,9 @@ disappear_view_once: false
 extev_polls: false
 # Bridge Signal 1:1 audio calls to Matrix VoIP. This is experimental.
 call_bridging: false
+# Tag to apply to chats pinned in Signal. Also used to pin a chat in Signal when the tag is added in Matrix.
+# Signal allows up to 4 pinned chats. Leave empty to not bridge pinned chats.
+pinned_tag: m.favourite
+# Tag to apply to chats archived in Signal. Also used to archive a chat in Signal when the tag is added in Matrix.
+# Set to m.lowpriority to move archived chats to low priority. Leave empty to not bridge archived chats.
+archive_tag:

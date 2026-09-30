@@ -76,6 +76,8 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 		return true
 	case *events.ContactList:
 		s.handleSignalContactList(evt)
+	case *events.ChatSettings:
+		s.handleSignalChatSettings(evt)
 	case *events.ACIFound:
 		s.handleSignalACIFound(evt)
 	case *events.QueueEmpty:

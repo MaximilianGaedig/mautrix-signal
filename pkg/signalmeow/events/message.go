@@ -35,6 +35,7 @@ func (*Receipt) isSignalEvent()                {}
 func (*ReadSelf) isSignalEvent()               {}
 func (*Call) isSignalEvent()                   {}
 func (*ContactList) isSignalEvent()            {}
+func (*ChatSettings) isSignalEvent()           {}
 func (*ACIFound) isSignalEvent()               {}
 func (*DeleteForMe) isSignalEvent()            {}
 func (*MessageRequestResponse) isSignalEvent() {}
@@ -130,6 +131,18 @@ func (c *Call) ConnectionParameters() *ringrtc.ConnectionParametersV4 {
 type ContactList struct {
 	Contacts []*types.Recipient
 	IsFromDB bool
+}
+
+// ChatSettings carries the per-chat settings (mute, archive, unread, pin) last seen in the storage service.
+// It always holds every chat the storage service knows about, not just the ones that changed.
+type ChatSettings struct {
+	Chats []ChatSettingsEntry
+}
+
+type ChatSettingsEntry struct {
+	// ChatID is the portal ID: a ServiceID string for 1:1 chats, or the group identifier for groups.
+	ChatID   string
+	Settings types.ChatSettings
 }
 
 type ACIFound struct {
