@@ -118,6 +118,7 @@ func (s *SignalClient) contactToUserInfo(ctx context.Context, contact *types.Rec
 	}
 	name := s.Main.Config.FormatDisplayname(contact)
 	ui.Name = &name
+	ui.ExtraProfile = bioExtraProfile(contact.Profile, s.ghostHasBio(ctx, contact))
 	if s.Main.Config.UseContactAvatars && contact.ContactAvatar.Hash != "" {
 		ui.Avatar = &bridgev2.Avatar{
 			ID: networkid.AvatarID("hash:" + contact.ContactAvatar.Hash),
