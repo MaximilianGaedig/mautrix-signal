@@ -28,6 +28,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+
+	"go.mau.fi/mautrix-signal/pkg/msgconv"
 )
 
 func supportedIfFFmpeg() event.CapabilitySupportLevel {
@@ -38,7 +40,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_09_30"
+	base := "fi.mau.signal.capabilities.2026_09_30.2"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -46,7 +48,11 @@ func capID() string {
 }
 
 const MaxFileSize = 100 * 1024 * 1024
-const MaxTextLength = 2000
+
+// Signal caps the body of a message at 2 KiB, but Matrix text longer than that is sent as the first 2 KiB plus
+// a long-text attachment of up to 64 KiB, so a whole message can be that long.
+const MaxTextLength = msgconv.MaxLongTextBytes
+const MaxCaptionLength = 2000
 
 var signalCaps = &event.RoomFeatures{
 	ID: capID(),
@@ -83,7 +89,7 @@ var signalCaps = &event.RoomFeatures{
 			MaxHeight:        4096,
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxTextLength,
+			MaxCaptionLength: MaxCaptionLength,
 		},
 		event.MsgVideo: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -93,7 +99,7 @@ var signalCaps = &event.RoomFeatures{
 			},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxTextLength,
+			MaxCaptionLength: MaxCaptionLength,
 		},
 		event.MsgAudio: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -110,7 +116,7 @@ var signalCaps = &event.RoomFeatures{
 			},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxTextLength,
+			MaxCaptionLength: MaxCaptionLength,
 		},
 		event.CapMsgSticker: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -154,7 +160,7 @@ var signalCaps = &event.RoomFeatures{
 		event.MemberActionBan:          event.CapLevelFullySupported,
 		event.MemberActionKick:         event.CapLevelFullySupported,
 	},
-	MaxTextLength:        MaxTextLength, // TODO support arbitrary sized text messages with files
+	MaxTextLength:        MaxTextLength,
 	LocationMessage:      event.CapLevelPartialSupport,
 	Poll:                 event.CapLevelFullySupported,
 	PollEnd:              event.CapLevelFullySupported,

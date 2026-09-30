@@ -147,6 +147,12 @@ func (mc *MessageConverter) ToSignal(
 	default:
 		return nil, fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, content.MsgType)
 	}
+	err := attachLongText(ctx, dm, func(ctx context.Context, data []byte) (*signalpb.AttachmentPointer, error) {
+		return getClient(ctx).UploadAttachment(ctx, data)
+	})
+	if err != nil {
+		return nil, err
+	}
 	return dm, nil
 }
 
