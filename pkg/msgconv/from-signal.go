@@ -164,7 +164,7 @@ func (mc *MessageConverter) ToMatrix(
 		cm.Parts = append(cm.Parts, mc.convertPaymentToMatrix(ctx, dm.Payment))
 	}
 	if dm.GiftBadge != nil {
-		cm.Parts = append(cm.Parts, mc.convertGiftBadgeToMatrix(ctx, dm.GiftBadge))
+		cm.Parts = append(cm.Parts, mc.convertGiftBadgeToMatrix(ctx, dm.GiftBadge, sender == ownACI))
 	}
 	if dm.Body != nil {
 		cm.Parts = append(cm.Parts, mc.convertTextToMatrix(ctx, dm, attMap))
@@ -283,12 +283,35 @@ func (mc *MessageConverter) convertTextToMatrix(ctx context.Context, dm *signalp
 	}
 }
 
+// paymentText says what a payment message was. The message carries an encrypted MobileCoin receipt, whose
+// amount only the wallet can read, so the amount can't be shown.
+func paymentText(payment *signalpb.DataMessage_Payment) string {
+	if activation := payment.GetActivation(); activation != nil {
+		if activation.GetType() == signalpb.DataMessage_Payment_Activation_ACTIVATED {
+			return "Activated payments"
+		}
+		return "Asked to activate payments"
+	}
+	text := "Sent a payment"
+	if note := payment.GetNotification().GetNote(); note != "" {
+		text += ": " + note
+	}
+	return text
+}
+
+func giftBadgeText(fromMe bool) string {
+	if fromMe {
+		return "Sent a gift badge"
+	}
+	return "Sent you a gift badge"
+}
+
 func (mc *MessageConverter) convertPaymentToMatrix(_ context.Context, payment *signalpb.DataMessage_Payment) *bridgev2.ConvertedMessagePart {
 	return &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "Payments are not yet supported",
+			Body:    paymentText(payment),
 		},
 		Extra: map[string]any{
 			"fi.mau.signal.payment": payment,
@@ -296,12 +319,12 @@ func (mc *MessageConverter) convertPaymentToMatrix(_ context.Context, payment *s
 	}
 }
 
-func (mc *MessageConverter) convertGiftBadgeToMatrix(_ context.Context, giftBadge *signalpb.DataMessage_GiftBadge) *bridgev2.ConvertedMessagePart {
+func (mc *MessageConverter) convertGiftBadgeToMatrix(_ context.Context, giftBadge *signalpb.DataMessage_GiftBadge, fromMe bool) *bridgev2.ConvertedMessagePart {
 	return &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "Gift badges are not yet supported",
+			Body:    giftBadgeText(fromMe),
 		},
 		Extra: map[string]any{
 			"fi.mau.signal.gift_badge": giftBadge,
