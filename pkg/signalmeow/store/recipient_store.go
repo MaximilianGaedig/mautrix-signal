@@ -47,6 +47,8 @@ type RecipientStore interface {
 	MarkUnregistered(ctx context.Context, serviceID libsignalgo.ServiceID, unregistered bool)
 
 	LoadAllContacts(ctx context.Context) ([]*types.Recipient, error)
+	// LoadBlockedACIs returns the ACIs of the recipients that are blocked.
+	LoadBlockedACIs(ctx context.Context) ([]uuid.UUID, error)
 }
 
 var _ RecipientStore = (*sqlStore)(nil)
@@ -344,6 +346,13 @@ func (s *sqlStore) LoadRecipientByE164(ctx context.Context, e164 string) (*types
 func (s *sqlStore) LoadAllContacts(ctx context.Context) ([]*types.Recipient, error) {
 	rows, err := s.db.Query(ctx, getAllRecipientsWithNameOrPhoneQuery, s.AccountID)
 	return dbutil.NewRowIterWithError(rows, scanRecipient, err).AsList()
+}
+
+const getBlockedACIsQuery = `SELECT aci_uuid FROM signalmeow_recipients WHERE account_id = $1 AND blocked AND aci_uuid IS NOT NULL`
+
+func (s *sqlStore) LoadBlockedACIs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, getBlockedACIsQuery, s.AccountID)
+	return dbutil.NewRowIterWithError(rows, dbutil.ScanSingleColumn[uuid.UUID], err).AsList()
 }
 
 func (s *sqlStore) DeleteRecipientByPNI(ctx context.Context, pni uuid.UUID) error {

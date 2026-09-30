@@ -75,6 +75,8 @@ func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 			s.handleSignalCall(evt)
 		}
 		return s.queueCallLog(s.callLog.fromSignal(evt))
+	case *events.BlockChanges:
+		return applyBlockChanges(s.Main.Bridge.BackgroundCtx, s.UserLogin, &s.UserLogin.Log, evt)
 	case *events.CallSync:
 		return s.queueCallLog(s.callLog.fromSync(evt))
 	case *events.ContactList:

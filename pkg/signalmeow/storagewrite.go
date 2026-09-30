@@ -52,11 +52,17 @@ const (
 // MaxPinnedChats is the maximum number of pinned chats Signal allows.
 const MaxPinnedChats = 4
 
-// storageEdit replaces one existing storage record with a new version of it.
+// storageEdit replaces one existing storage record with a new version of it, or adds a new record.
 type storageEdit struct {
-	// OldID is the base64 storage ID of the record that is being replaced.
+	// OldID is the base64 storage ID of the record that is being replaced. It is empty for a new record.
 	OldID  string
 	Record *signalpb.StorageRecord
+	// InsertType is the type of the new record when OldID is empty.
+	InsertType signalpb.ManifestRecord_Identifier_Type
+}
+
+func cloneStorageRecord(record *signalpb.StorageRecord) *signalpb.StorageRecord {
+	return proto.Clone(record).(*signalpb.StorageRecord)
 }
 
 // storageSnapshot is the decrypted state of the parts of the storage service that a change needs to look at.
@@ -105,7 +111,7 @@ type builtStorageWrite struct {
 
 // buildStorageWrite creates the write operation that swaps the edited records for new versions with fresh random IDs.
 // The new manifest has version + 1, and is the old one with only those identifiers swapped.
-// Nothing else is inserted or deleted.
+// Nothing else is inserted or deleted, except for the records edits add.
 func buildStorageWrite(storageKey []byte, manifest *signalpb.ManifestRecord, sourceDevice uint32, edits []storageEdit) (*builtStorageWrite, error) {
 	if len(edits) == 0 {
 		return nil, errStorageNothingToDo
@@ -118,6 +124,21 @@ func buildStorageWrite(storageKey []byte, manifest *signalpb.ManifestRecord, sou
 	out := &builtStorageWrite{Op: op}
 	replaced := make(map[string]struct{}, len(edits))
 	for _, edit := range edits {
+		if edit.OldID == "" {
+			newID := random.Bytes(storageItemIDLength)
+			encrypted, err := encryptStorageRecord(storageKey, recordIKM, newID, edit.Record)
+			if err != nil {
+				return nil, err
+			}
+			newManifest.Identifiers = append(newManifest.Identifiers, &signalpb.ManifestRecord_Identifier{Raw: newID, Type: edit.InsertType})
+			op.InsertItem = append(op.InsertItem, &signalpb.StorageItem{Key: newID, Value: encrypted})
+			out.NewRecords = append(out.NewRecords, &DecryptedStorageRecord{
+				ItemType:      edit.InsertType,
+				StorageID:     base64.StdEncoding.EncodeToString(newID),
+				StorageRecord: edit.Record,
+			})
+			continue
+		}
 		if _, dupe := replaced[edit.OldID]; dupe {
 			return nil, fmt.Errorf("storage record %s edited twice", edit.OldID)
 		}

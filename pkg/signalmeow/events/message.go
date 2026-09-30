@@ -35,6 +35,7 @@ func (*Receipt) isSignalEvent()                {}
 func (*ReadSelf) isSignalEvent()               {}
 func (*Call) isSignalEvent()                   {}
 func (*CallSync) isSignalEvent()               {}
+func (*BlockChanges) isSignalEvent()           {}
 func (*ContactList) isSignalEvent()            {}
 func (*ChatSettings) isSignalEvent()           {}
 func (*ACIFound) isSignalEvent()               {}
@@ -133,6 +134,12 @@ func (c *Call) ConnectionParameters() *ringrtc.ConnectionParametersV4 {
 type CallSync struct {
 	Timestamp uint64
 	Raw       *signalpb.SyncMessage_CallEvent
+}
+
+// BlockChanges is who the user blocked or unblocked, either on another device or by a storage service update.
+type BlockChanges struct {
+	Blocked   []uuid.UUID
+	Unblocked []uuid.UUID
 }
 
 type ContactList struct {

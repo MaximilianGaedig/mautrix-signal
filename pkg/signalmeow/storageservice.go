@@ -73,6 +73,7 @@ func (cli *Client) StorageSync(ctx context.Context) {
 func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdate) error {
 	log := zerolog.Ctx(ctx)
 	var changedContacts []*types.Recipient
+	blockChanges := &events.BlockChanges{}
 	chatSettingsSeen := false
 	for _, record := range update.NewRecords {
 		switch data := record.StorageRecord.GetRecord().(type) {
@@ -96,6 +97,7 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 				chatSettingsSeen = true
 			}
 			topLevelChanged := false
+			blockedBefore := false
 			recipient, err := cli.Store.RecipientStore.LoadAndUpdateRecipient(ctx, aci, pni, func(recipient *types.Recipient) (changed bool, err error) {
 				if len(contact.ProfileKey) == libsignalgo.ProfileKeyLength {
 					newProfileKey := libsignalgo.ProfileKey(contact.ProfileKey)
@@ -122,6 +124,7 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 					changed = changed || recipient.E164 != contact.E164
 					recipient.E164 = contact.E164
 				}
+				blockedBefore = recipient.Blocked
 				if contact.Blocked != recipient.Blocked {
 					changed = true
 					recipient.Blocked = contact.Blocked
@@ -138,6 +141,13 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 			}
 			if topLevelChanged {
 				changedContacts = append(changedContacts, recipient)
+			}
+			if aci != uuid.Nil && contact.Blocked != blockedBefore {
+				if contact.Blocked {
+					blockChanges.Blocked = append(blockChanges.Blocked, aci)
+				} else {
+					blockChanges.Unblocked = append(blockChanges.Unblocked, aci)
+				}
 			}
 		case *signalpb.StorageRecord_GroupV2:
 			if len(data.GroupV2.MasterKey) != libsignalgo.GroupMasterKeyLength {
@@ -179,6 +189,9 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 			Contacts: changedContacts,
 			IsFromDB: true,
 		})
+	}
+	if (len(blockChanges.Blocked) > 0 || len(blockChanges.Unblocked) > 0) && !update.NoChatSettingsEvent {
+		go cli.handleEvent(blockChanges)
 	}
 	if chatSettingsSeen && !update.NoChatSettingsEvent {
 		go cli.handleEvent(cli.chatSettingsEvent())
