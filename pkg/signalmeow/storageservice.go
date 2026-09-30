@@ -21,6 +21,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -179,17 +180,20 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 			IsFromDB: true,
 		})
 	}
-	if chatSettingsSeen {
+	if chatSettingsSeen && !update.NoChatSettingsEvent {
 		go cli.handleEvent(cli.chatSettingsEvent())
 	}
 	return nil
 }
 
 type StorageUpdate struct {
-	Version        uint64
-	NewRecords     []*DecryptedStorageRecord
-	RemovedRecords []string
-	MissingRecords []string
+	Version    uint64
+	NewRecords []*DecryptedStorageRecord
+	// NoChatSettingsEvent skips the chat settings event. Used for records the bridge wrote itself,
+	// so that the change isn't bounced back to where it came from.
+	NoChatSettingsEvent bool
+	RemovedRecords      []string
+	MissingRecords      []string
 }
 
 func (cli *Client) FetchStorage(ctx context.Context, masterKey []byte, currentVersion uint64, existingKeys []string) (*StorageUpdate, error) {
@@ -281,7 +285,6 @@ func (cli *Client) fetchStorageManifest(ctx context.Context, storageKey []byte, 
 		path += fmt.Sprintf("/version/%d", greaterThanVersion)
 	}
 	var encryptedManifest signalpb.StorageManifest
-	var manifestRecord signalpb.ManifestRecord
 	resp, err := web.SendHTTPRequest(ctx, web.StorageHostname, http.MethodGet, path, &web.HTTPReqOpt{
 		Username:    &storageCreds.Username,
 		Password:    &storageCreds.Password,
@@ -299,13 +302,20 @@ func (cli *Client) fetchStorageManifest(ctx context.Context, storageKey []byte, 
 		return nil, fmt.Errorf("failed to read storage manifest response: %w", err)
 	} else if err = proto.Unmarshal(body, &encryptedManifest); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal encrypted storage manifest: %w", err)
-	} else if decryptedManifestBytes, err := decryptBytes(deriveStorageManifestKey(storageKey, encryptedManifest.GetVersion()), encryptedManifest.GetValue()); err != nil {
+	} else {
+		return decryptStorageManifest(storageKey, &encryptedManifest)
+	}
+}
+
+func decryptStorageManifest(storageKey []byte, encryptedManifest *signalpb.StorageManifest) (*signalpb.ManifestRecord, error) {
+	var manifestRecord signalpb.ManifestRecord
+	decryptedManifestBytes, err := decryptBytes(deriveStorageManifestKey(storageKey, encryptedManifest.GetVersion()), encryptedManifest.GetValue())
+	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt storage manifest: %w", err)
 	} else if err = proto.Unmarshal(decryptedManifestBytes, &manifestRecord); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal decrypted manifest record: %w", err)
-	} else {
-		return &manifestRecord, nil
 	}
+	return &manifestRecord, nil
 }
 
 func (cli *Client) fetchStorageRecords(
@@ -344,19 +354,15 @@ func (cli *Client) fetchStorageRecords(
 			log.Warn().Int("item_index", i).Str("item_key", base64Key).Msg("Received unexpected storage item")
 			continue
 		}
-		itemKey := deriveStorageItemKey(storageKey, recordIKM, encryptedItem.GetKey(), base64Key)
-		decryptedItemBytes, err := decryptBytes(itemKey, encryptedItem.GetValue())
-		if err != nil {
+		decryptedItem, decryptedItemBytes, err := decryptStorageItem(storageKey, recordIKM, encryptedItem)
+		if errors.Is(err, errStorageItemDecrypt) {
 			log.Warn().Err(err).
 				Stringer("item_type", itemType).
 				Int("item_index", i).
 				Str("item_key", base64Key).
 				Msg("Failed to decrypt storage item")
 			continue
-		}
-		var decryptedItem signalpb.StorageRecord
-		err = proto.Unmarshal(decryptedItemBytes, &decryptedItem)
-		if err != nil {
+		} else if err != nil {
 			logEvt := log.Warn().Err(err).
 				Stringer("item_type", itemType).
 				Int("item_index", i).
@@ -371,11 +377,28 @@ func (cli *Client) fetchStorageRecords(
 		records = append(records, &DecryptedStorageRecord{
 			ItemType:      itemType,
 			StorageID:     base64Key,
-			StorageRecord: &decryptedItem,
+			StorageRecord: decryptedItem,
 		})
 	}
 	missingKeys := maps.Keys(inputRecords)
 	return records, missingKeys, nil
+}
+
+var errStorageItemDecrypt = errors.New("failed to decrypt")
+
+func decryptStorageItem(storageKey, recordIKM []byte, item *signalpb.StorageItem) (*signalpb.StorageRecord, []byte, error) {
+	base64Key := base64.StdEncoding.EncodeToString(item.GetKey())
+	itemKey := deriveStorageItemKey(storageKey, recordIKM, item.GetKey(), base64Key)
+	decryptedItemBytes, err := decryptBytes(itemKey, item.GetValue())
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errStorageItemDecrypt, err)
+	}
+	var decryptedItem signalpb.StorageRecord
+	err = proto.Unmarshal(decryptedItemBytes, &decryptedItem)
+	if err != nil {
+		return nil, decryptedItemBytes, err
+	}
+	return &decryptedItem, decryptedItemBytes, nil
 }
 
 func (cli *Client) fetchStorageItemsChunk(ctx context.Context, recordKeys [][]byte) ([]*signalpb.StorageItem, error) {
