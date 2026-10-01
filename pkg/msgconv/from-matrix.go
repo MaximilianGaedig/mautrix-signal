@@ -109,6 +109,9 @@ func (mc *MessageConverter) ToSignal(
 			dm.BodyRanges = bodyRanges
 		}
 		dm.Attachments = []*signalpb.AttachmentPointer{att}
+		if err = applyViewOnce(dm, content); err != nil {
+			return nil, err
+		}
 	case event.MessageType(event.EventSticker.Type):
 		if content.FileName == "" {
 			content.FileName = "sticker" + exmime.ExtensionFromMimetype(content.Info.MimeType)

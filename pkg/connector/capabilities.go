@@ -40,7 +40,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_09_30.2"
+	base := "fi.mau.signal.capabilities.2026_10_02"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -53,6 +53,9 @@ const MaxFileSize = 100 * 1024 * 1024
 // a long-text attachment of up to 64 KiB, so a whole message can be that long.
 const MaxTextLength = msgconv.MaxLongTextBytes
 const MaxCaptionLength = 2000
+
+// Signal lets a single photo or video be opened once, and nothing else.
+var viewOnceTypes = []*event.BeeperViewLimitedMedia{&msgconv.ViewOnce}
 
 var signalCaps = &event.RoomFeatures{
 	ID: capID(),
@@ -90,6 +93,7 @@ var signalCaps = &event.RoomFeatures{
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxCaptionLength,
+			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgVideo: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -100,6 +104,7 @@ var signalCaps = &event.RoomFeatures{
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxCaptionLength,
+			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgAudio: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -251,5 +256,5 @@ func (s *SignalConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities
 }
 
 func (s *SignalConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 11
+	return 1, 12
 }
