@@ -88,7 +88,6 @@ var signalCaps = &event.RoomFeatures{
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
-			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgVideo: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -100,7 +99,6 @@ var signalCaps = &event.RoomFeatures{
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
-			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgAudio: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
