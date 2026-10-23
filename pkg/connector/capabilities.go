@@ -23,13 +23,14 @@ import (
 	"go.mau.fi/util/ffmpeg"
 	"go.mau.fi/util/jsontime"
 	"go.mau.fi/util/ptr"
-
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-signal/pkg/msgconv"
+	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
+	"go.mau.fi/mautrix-signal/pkg/signalid"
 )
 
 func supportedIfFFmpeg() event.CapabilitySupportLevel {
@@ -40,7 +41,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_10_02"
+	base := "fi.mau.signal.capabilities.2026_10_21_mxg1"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -48,14 +49,7 @@ func capID() string {
 }
 
 const MaxFileSize = 100 * 1024 * 1024
-
-// Signal caps the body of a message at 2 KiB, but Matrix text longer than that is sent as the first 2 KiB plus
-// a long-text attachment of up to 64 KiB, so a whole message can be that long.
-const MaxTextLength = msgconv.MaxLongTextBytes
-const MaxCaptionLength = 2000
-
-// Signal lets a single photo or video be opened once, and nothing else.
-var viewOnceTypes = []*event.BeeperViewLimitedMedia{&msgconv.ViewOnce}
+const MaxTextLength = 64 * 1024
 
 var signalCaps = &event.RoomFeatures{
 	ID: capID(),
@@ -90,6 +84,7 @@ var signalCaps = &event.RoomFeatures{
 			},
 			MaxWidth:         4096,
 			MaxHeight:        4096,
+			ViewLimitedTypes: []*event.BeeperViewLimitedMedia{{Type: "count", Count: 1}},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxCaptionLength,
@@ -101,6 +96,7 @@ var signalCaps = &event.RoomFeatures{
 				"video/ogg":  event.CapLevelFullySupported,
 				"video/webm": event.CapLevelFullySupported,
 			},
+			ViewLimitedTypes: []*event.BeeperViewLimitedMedia{{Type: "count", Count: 1}},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxCaptionLength,
@@ -112,6 +108,8 @@ var signalCaps = &event.RoomFeatures{
 				"audio/mpeg": event.CapLevelFullySupported,
 				"audio/mp3":  event.CapLevelFullySupported,
 				"audio/flac": event.CapLevelFullySupported,
+				"audio/mp4":  event.CapLevelFullySupported,
+				"audio/wav":  event.CapLevelFullySupported,
 			},
 			MaxSize: MaxFileSize,
 		},
@@ -203,6 +201,7 @@ var signalDisappearingCap = &event.DisappearingTimerCapability{
 
 var signalCapsNoteToSelf *event.RoomFeatures
 var signalCapsDM *event.RoomFeatures
+var signalCapsPNIDM *event.RoomFeatures
 
 func init() {
 	signalCapsDM = ptr.Clone(signalCaps)
@@ -211,7 +210,16 @@ func init() {
 	signalCapsDM.State = event.StateFeatureMap{
 		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
 	}
+
+	signalCapsPNIDM = ptr.Clone(signalCapsDM)
+	signalCapsPNIDM.ID += "+pni"
+
+	signalCapsDM.BlockUser = true
+	signalCapsDM.ReportSpam = true
+
 	signalCapsNoteToSelf = ptr.Clone(signalCapsDM)
+	signalCapsNoteToSelf.BlockUser = false
+	signalCapsNoteToSelf.ReportSpam = false
 	signalCapsNoteToSelf.EditMaxAge = nil
 	signalCapsNoteToSelf.DeleteMaxAge = nil
 	signalCapsNoteToSelf.ID = capID() + "+note_to_self"
@@ -221,6 +229,10 @@ func (s *SignalClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 	if portal.Receiver == s.UserLogin.ID && portal.ID == networkid.PortalID(s.UserLogin.ID) {
 		return signalCapsNoteToSelf
 	} else if portal.RoomType == database.RoomTypeDM {
+		userID, _, _ := signalid.ParsePortalID(portal.ID)
+		if userID.Type == libsignalgo.ServiceIDTypePNI {
+			return signalCapsPNIDM
+		}
 		return signalCapsDM
 	}
 	return signalCaps
@@ -235,7 +247,7 @@ var signalGeneralCaps = &bridgev2.NetworkGeneralCapabilities{
 		ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
 			CreateDM:       true,
 			LookupPhone:    true,
-			LookupUsername: false, // TODO implement
+			LookupUsername: true,
 			ContactList:    true,
 		},
 		GroupCreation: map[string]bridgev2.GroupTypeCapabilities{
@@ -256,5 +268,5 @@ func (s *SignalConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities
 }
 
 func (s *SignalConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 12
+	return 1, 15
 }

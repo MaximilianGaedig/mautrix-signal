@@ -96,8 +96,14 @@ func (cli *Client) sendToGroupWithSenderKey(
 		SuccessfullySentTo: make([]SuccessfulSendResult, 0),
 		FailedToSendTo:     make([]FailedSendResult, 0),
 	}
-
 	groupIDStr := types.GroupIdentifier(groupID.String())
+
+	if retries == 0 {
+		for _, recipientID := range allRecipients {
+			cli.addSendCache(recipientID, groupIDStr, messageTimestamp, content)
+		}
+	}
+
 	deviceIDs, senderKeyRecipients, fallbackRecipients := cli.getDevicesIDs(ctx, allRecipients, sec, result)
 	if len(senderKeyRecipients) == 0 {
 		doUnlock()
@@ -130,6 +136,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 		log.Debug().
 			Any("removed_devices", removedDevices).
 			Msg("Resetting sender key due to recipient device changes")
+		ski.SharedWith = make(map[libsignalgo.ServiceID][]int)
 		devicesAddedTo = slices.Collect(maps.Keys(deviceIDs))
 		err = cli.Store.SenderKeyStore.DeleteSenderKey(ctx, myAddress, ski.DistributionID)
 		if err != nil {
@@ -190,9 +197,6 @@ func (cli *Client) sendToGroupWithSenderKey(
 		}
 		return nil, err
 	}
-	for recipientID := range ski.SharedWith {
-		cli.addSendCache(recipientID, groupIDStr, messageTimestamp, content)
-	}
 	header := http.Header{}
 	header.Set("Content-Type", string(web.ContentTypeMultiRecipientMessage))
 	if sec.SendEndorsement != nil {
@@ -245,7 +249,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 				cli.Store.RecipientStore.MarkUnregistered(ctx, serviceID, true)
 				result.FailedToSendTo = append(result.FailedToSendTo, FailedSendResult{
 					Recipient: serviceID,
-					Error:     fmt.Errorf("multi-recipient send 404"),
+					Error:     fmt.Errorf("%w (multi-recipient send returned 404)", ErrUnregisteredUser),
 				})
 			} else {
 				result.SuccessfullySentTo = append(result.SuccessfullySentTo, SuccessfulSendResult{
@@ -273,6 +277,8 @@ func (cli *Client) sendToGroupWithSenderKey(
 		doUnlock()
 		// Retry recursively after fixing device lists
 		return cli.sendToGroupWithSenderKey(ctx, groupID, allRecipients, sec, content, messageTimestamp, retries+1)
+	case 413, 428, 429:
+		return nil, fmt.Errorf("%w (multi-recipient send returned %d)", ErrRateLimited, resp.GetStatus())
 	default:
 		return nil, fmt.Errorf("unexpected status code %d in multi-recipient send", resp.GetStatus())
 	}

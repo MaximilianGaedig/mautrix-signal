@@ -32,6 +32,7 @@ type SignalEvent interface {
 func (*ChatEvent) isSignalEvent()              {}
 func (*DecryptionError) isSignalEvent()        {}
 func (*Receipt) isSignalEvent()                {}
+func (*ViewOnceOpen) isSignalEvent()           {}
 func (*ReadSelf) isSignalEvent()               {}
 func (*Call) isSignalEvent()                   {}
 func (*CallSync) isSignalEvent()               {}
@@ -43,6 +44,7 @@ func (*DeleteForMe) isSignalEvent()            {}
 func (*MessageRequestResponse) isSignalEvent() {}
 func (*QueueEmpty) isSignalEvent()             {}
 func (*LoggedOut) isSignalEvent()              {}
+func (*IdentityChange) isSignalEvent()         {}
 
 type MessageInfo struct {
 	Sender uuid.UUID
@@ -53,6 +55,8 @@ type MessageInfo struct {
 
 	GroupRevision   uint32
 	ServerTimestamp uint64
+	ServerGUID      string
+	ReportingToken  []byte
 }
 
 type ChatEvent struct {
@@ -69,6 +73,10 @@ type DecryptionError struct {
 type Receipt struct {
 	Sender  uuid.UUID
 	Content *signalpb.ReceiptMessage
+}
+
+type ViewOnceOpen struct {
+	*signalpb.SyncMessage_ViewOnceOpen
 }
 
 type ReadSelf struct {
@@ -180,3 +188,7 @@ type MessageRequestResponse struct {
 type QueueEmpty struct{}
 
 type LoggedOut struct{ Error error }
+
+type IdentityChange struct {
+	ServiceID libsignalgo.ServiceID
+}

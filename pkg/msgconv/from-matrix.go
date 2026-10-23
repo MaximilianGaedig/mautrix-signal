@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -48,6 +49,12 @@ func (mc *MessageConverter) ToSignal(
 	relaybotFormatted bool,
 	replyTo *database.Message,
 ) (*signalpb.DataMessage, error) {
+	if content.BeeperViewLimited != nil && replyTo != nil {
+		return nil, bridgev2.ErrUnsupportedViewLimitedType
+	}
+	if content.BeeperViewLimited != nil && content.FileName != "" && (content.FileName != content.Body || content.Format == event.FormatHTML) {
+		return nil, bridgev2.ErrCaptionsNotAllowed
+	}
 	ctx = context.WithValue(ctx, contextKeyClient, client)
 	ctx = context.WithValue(ctx, contextKeyPortal, portal)
 	if evt.Type == event.EventSticker {
@@ -150,13 +157,38 @@ func (mc *MessageConverter) ToSignal(
 	default:
 		return nil, fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, content.MsgType)
 	}
-	err := attachLongText(ctx, dm, func(ctx context.Context, data []byte) (*signalpb.AttachmentPointer, error) {
-		return getClient(ctx).UploadAttachment(ctx, data)
-	})
-	if err != nil {
+	if content.BeeperViewLimited != nil {
+		dm.IsViewOnce = proto.Bool(true)
+		dm.RequiredProtocolVersion = proto.Uint32(max(dm.GetRequiredProtocolVersion(), uint32(signalpb.DataMessage_VIEW_ONCE_VIDEO)))
+		dm.Body = nil
+		dm.BodyRanges = nil
+		dm.Preview = nil
+	}
+	if err := mc.uploadLongText(ctx, dm); err != nil {
 		return nil, err
 	}
 	return dm, nil
+}
+
+const maxInlineBodySize = 2 * 1024
+
+func (mc *MessageConverter) uploadLongText(ctx context.Context, dm *signalpb.DataMessage) error {
+	body := dm.GetBody()
+	if len(body) <= maxInlineBodySize {
+		return nil
+	}
+	att, err := getClient(ctx).UploadAttachment(ctx, []byte(body))
+	if err != nil {
+		return fmt.Errorf("%w (long text): %w", bridgev2.ErrMediaReuploadFailed, err)
+	}
+	att.ContentType = proto.String(LongTextContentType)
+	dm.Attachments = append([]*signalpb.AttachmentPointer{att}, dm.Attachments...)
+	cut := maxInlineBodySize
+	for !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	dm.Body = proto.String(body[:cut])
+	return nil
 }
 
 func maybeInt[T constraints.Integer](v T) *T {
@@ -183,7 +215,7 @@ func (mc *MessageConverter) convertFileToSignal(ctx context.Context, evt *event.
 	if content.MSC3245Voice != nil && mime != "audio/aac" && ffmpeg.Supported() {
 		data, err = ffmpeg.ConvertBytes(ctx, data, ".aac", []string{}, []string{"-c:a", "aac"}, mime)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w (voice to aac): %w", bridgev2.ErrMediaConvertFailed, err)
 		}
 		mime = "audio/aac"
 		fileName += ".aac"
@@ -193,7 +225,7 @@ func (mc *MessageConverter) convertFileToSignal(ctx context.Context, evt *event.
 			// allowed
 		case "image/gif":
 			if !ffmpeg.Supported() {
-				return nil, fmt.Errorf("converting gif stickers is not supported")
+				return nil, fmt.Errorf("%w: converting gif stickers is not supported", bridgev2.ErrUnsupportedMediaType)
 			}
 			data, err = ffmpeg.ConvertBytes(ctx, data, ".apng", []string{}, []string{}, mime)
 			if err != nil {
@@ -202,7 +234,7 @@ func (mc *MessageConverter) convertFileToSignal(ctx context.Context, evt *event.
 			fileName += ".apng"
 			mime = "image/apng"
 		default:
-			return nil, fmt.Errorf("unsupported content type for sticker %s", mime)
+			return nil, fmt.Errorf("%w for sticker: %s", bridgev2.ErrUnsupportedMediaType, mime)
 		}
 	}
 	att, err := getClient(ctx).UploadAttachment(ctx, data)
