@@ -87,7 +87,7 @@ var signalCaps = &event.RoomFeatures{
 			ViewLimitedTypes: []*event.BeeperViewLimitedMedia{{Type: "count", Count: 1}},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxCaptionLength,
+			MaxCaptionLength: MaxTextLength,
 			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgVideo: {
@@ -99,7 +99,7 @@ var signalCaps = &event.RoomFeatures{
 			ViewLimitedTypes: []*event.BeeperViewLimitedMedia{{Type: "count", Count: 1}},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxCaptionLength,
+			MaxCaptionLength: MaxTextLength,
 			ViewLimitedTypes: viewOnceTypes,
 		},
 		event.MsgAudio: {
@@ -119,7 +119,7 @@ var signalCaps = &event.RoomFeatures{
 			},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
-			MaxCaptionLength: MaxCaptionLength,
+			MaxCaptionLength: MaxTextLength,
 		},
 		event.CapMsgSticker: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
