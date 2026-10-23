@@ -56,7 +56,7 @@ func TestIncomingPins(t *testing.T) {
 			if typ := evt.GetType(); typ != bridgev2.RemoteEventChatInfoChange {
 				t.Fatalf("type = %s, want chat info change", typ)
 			}
-			change, err := evt.GetChatInfoChange(context.Background())
+			change, err := evt.GetChatInfoChange(context.Background(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

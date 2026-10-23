@@ -262,7 +262,7 @@ func (cli *Client) StartReceiveLoops(ctx context.Context) (chan SignalConnection
 		case <-loopCtx.Done():
 			return
 		case <-initialConnectChan:
-			log.Info().Msg("Both websockets connected, sending contacts sync request")
+			log.Info().Msg("Both websockets connected")
 			err = cli.RegisterCapabilities(loopCtx)
 			if err != nil {
 				zerolog.Ctx(ctx).Err(err).Msg("Failed to register capabilities")
@@ -609,7 +609,7 @@ func (cli *Client) handleDecryptedResult(
 		return nil
 	case *signalpb.Content_DataMessage:
 		handlerSuccess, sendDeliveryReceipt = cli.incomingDataMessage(
-			ctx, content.DataMessage, theirServiceID.UUID, theirServiceID, envelope.GetServerTimestamp(), isBlocked,
+			ctx, content.DataMessage, theirServiceID.UUID, theirServiceID, envelope.GetServerTimestamp(), isBlocked, envelope,
 		)
 		deliveryReceiptTS = content.DataMessage.GetTimestamp()
 	case *signalpb.Content_EditMessage:
@@ -776,7 +776,7 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 				log.Warn().Msg("sync message sent destination is nil")
 			} else if syncSent.Message != nil {
 				// TODO handle expiration start ts, and maybe the sync message ts?
-				cli.incomingDataMessage(ctx, syncSent.Message, cli.Store.ACI, syncDestinationServiceID, envelope.GetServerTimestamp(), false)
+				cli.incomingDataMessage(ctx, syncSent.Message, cli.Store.ACI, syncDestinationServiceID, envelope.GetServerTimestamp(), false, nil)
 			} else if syncSent.EditMessage != nil {
 				cli.incomingEditMessage(ctx, syncSent.EditMessage, cli.Store.ACI, syncDestinationServiceID, envelope.GetServerTimestamp(), false)
 			}
@@ -821,12 +821,14 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 				})
 			}
 		}
-	case *signalpb.SyncMessage_Blocked_:
-		handlerSuccess = cli.handleBlockedSync(ctx, content.Blocked)
 	case *signalpb.SyncMessage_CallEvent_:
 		handlerSuccess = cli.handleEvent(&events.CallSync{
 			Timestamp: envelope.GetClientTimestamp(),
 			Raw:       content.CallEvent,
+		})
+	case *signalpb.SyncMessage_ViewOnceOpen_:
+		handlerSuccess = cli.handleEvent(&events.ViewOnceOpen{
+			SyncMessage_ViewOnceOpen: content.ViewOnceOpen,
 		})
 	case *signalpb.SyncMessage_DeleteForMe_:
 		handlerSuccess = cli.handleEvent(&events.DeleteForMe{
@@ -844,6 +846,22 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 			})
 			if err != nil {
 				log.Err(err).Msg("Failed to clear needs_pni_signature flag after message request accept")
+			}
+		}
+		responseType := content.MessageRequestResponse.GetType()
+		if aciUUID != uuid.Nil && (responseType == signalpb.SyncMessage_MessageRequestResponse_ACCEPT ||
+			responseType == signalpb.SyncMessage_MessageRequestResponse_BLOCK ||
+			responseType == signalpb.SyncMessage_MessageRequestResponse_BLOCK_AND_SPAM ||
+			responseType == signalpb.SyncMessage_MessageRequestResponse_BLOCK_AND_DELETE) {
+			blocked := responseType != signalpb.SyncMessage_MessageRequestResponse_ACCEPT
+			_, err := cli.Store.RecipientStore.LoadAndUpdateRecipient(ctx, aciUUID, uuid.Nil, func(recipient *types.Recipient) (bool, error) {
+				changed := recipient.Blocked != blocked
+				recipient.Blocked = blocked
+				return changed, nil
+			})
+			if err != nil {
+				log.Err(err).Msg("Failed to update blocked state from message request response")
+				return false
 			}
 		}
 		var groupID *libsignalgo.GroupIdentifier
@@ -947,6 +965,12 @@ func (cli *Client) incomingEditMessage(
 	if editMessage.GetDataMessage().GetGroupV2() != nil {
 		// Pull out the master key then store it ASAP - we should pass around GroupIdentifier
 		groupMasterKeyBytes := editMessage.GetDataMessage().GetGroupV2().GetMasterKey()
+		if len(groupMasterKeyBytes) != libsignalgo.GroupMasterKeyLength {
+			zerolog.Ctx(ctx).Warn().
+				Int("group_master_key_length", len(groupMasterKeyBytes)).
+				Msg("Unexpected group master key length")
+			return true, false
+		}
 		masterKey := masterKeyFromBytes(libsignalgo.GroupMasterKey(groupMasterKeyBytes))
 		var err error
 		groupID, err = cli.StoreMasterKey(ctx, masterKey)
@@ -977,15 +1001,20 @@ func (cli *Client) incomingDataMessage(
 	chatRecipient libsignalgo.ServiceID,
 	serverTimestamp uint64,
 	isBlocked bool,
+	envelope *signalpb.Envelope,
 ) (handlerSuccess, sendDeliveryReceipt bool) {
 	// If there's a profile key, save it
-	if dataMessage.ProfileKey != nil {
+	if len(dataMessage.ProfileKey) == libsignalgo.ProfileKeyLength {
 		profileKey := libsignalgo.ProfileKey(dataMessage.ProfileKey)
 		err := cli.Store.RecipientStore.StoreProfileKey(ctx, messageSenderACI, profileKey)
 		if err != nil {
 			zerolog.Ctx(ctx).Err(err).Msg("StoreProfileKey error")
 			return
 		}
+	} else if dataMessage.ProfileKey != nil {
+		zerolog.Ctx(ctx).Warn().
+			Int("profile_key_length", len(dataMessage.ProfileKey)).
+			Msg("Unexpected profile key length")
 	}
 
 	// If it's a group message, get the ID and invalidate cache if necessary
@@ -994,6 +1023,12 @@ func (cli *Client) incomingDataMessage(
 	if dataMessage.GetGroupV2() != nil {
 		// Pull out the master key then store it ASAP - we should pass around GroupIdentifier
 		groupMasterKeyBytes := dataMessage.GetGroupV2().GetMasterKey()
+		if len(groupMasterKeyBytes) != libsignalgo.GroupMasterKeyLength {
+			zerolog.Ctx(ctx).Warn().
+				Int("group_master_key_length", len(groupMasterKeyBytes)).
+				Msg("Unexpected group master key length")
+			return true, false
+		}
 		masterKey := masterKeyFromBytes(libsignalgo.GroupMasterKey(groupMasterKeyBytes))
 		var err error
 		groupID, err = cli.StoreMasterKey(ctx, masterKey)
@@ -1012,6 +1047,13 @@ func (cli *Client) incomingDataMessage(
 		ChatID:          groupOrUserID(groupID, chatRecipient),
 		GroupRevision:   groupRevision,
 		ServerTimestamp: serverTimestamp,
+	}
+	if envelope != nil {
+		guid, _ := ParseStringOrBinaryUUID(envelope.GetServerGuid(), envelope.GetServerGuidBinary())
+		if guid != uuid.Nil {
+			evtInfo.ServerGUID = guid.String()
+		}
+		evtInfo.ReportingToken = envelope.GetReportSpamToken()
 	}
 	// Hacky special case for group calls to cache the state
 	if dataMessage.GroupCallUpdate != nil {

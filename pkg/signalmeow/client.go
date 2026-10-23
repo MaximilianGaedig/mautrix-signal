@@ -86,7 +86,7 @@ type Client struct {
 var InMemorySendCacheSize = 2048
 
 func NewClient(device *store.Device, log zerolog.Logger, evtHandler func(events.SignalEvent) bool) *Client {
-	return &Client{
+	c := &Client{
 		Store:        device,
 		Log:          log,
 		EventHandler: evtHandler,
@@ -98,6 +98,10 @@ func NewClient(device *store.Device, log zerolog.Logger, evtHandler func(events.
 		},
 		sendCache: exsync.NewRingBuffer[sendCacheKey, *signalpb.Content](InMemorySendCacheSize),
 	}
+	device.SetIdentityChangeCallback(func(id libsignalgo.ServiceID) {
+		c.handleEvent(&events.IdentityChange{ServiceID: id})
+	})
+	return c
 }
 
 func (cli *Client) handleEvent(evt events.SignalEvent) bool {

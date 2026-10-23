@@ -32,10 +32,10 @@ type SignalEvent interface {
 func (*ChatEvent) isSignalEvent()              {}
 func (*DecryptionError) isSignalEvent()        {}
 func (*Receipt) isSignalEvent()                {}
+func (*ViewOnceOpen) isSignalEvent()           {}
 func (*ReadSelf) isSignalEvent()               {}
 func (*Call) isSignalEvent()                   {}
 func (*CallSync) isSignalEvent()               {}
-func (*BlockChanges) isSignalEvent()           {}
 func (*ContactList) isSignalEvent()            {}
 func (*ChatSettings) isSignalEvent()           {}
 func (*ACIFound) isSignalEvent()               {}
@@ -43,6 +43,7 @@ func (*DeleteForMe) isSignalEvent()            {}
 func (*MessageRequestResponse) isSignalEvent() {}
 func (*QueueEmpty) isSignalEvent()             {}
 func (*LoggedOut) isSignalEvent()              {}
+func (*IdentityChange) isSignalEvent()         {}
 
 type MessageInfo struct {
 	Sender uuid.UUID
@@ -53,6 +54,8 @@ type MessageInfo struct {
 
 	GroupRevision   uint32
 	ServerTimestamp uint64
+	ServerGUID      string
+	ReportingToken  []byte
 }
 
 type ChatEvent struct {
@@ -69,6 +72,10 @@ type DecryptionError struct {
 type Receipt struct {
 	Sender  uuid.UUID
 	Content *signalpb.ReceiptMessage
+}
+
+type ViewOnceOpen struct {
+	*signalpb.SyncMessage_ViewOnceOpen
 }
 
 type ReadSelf struct {
@@ -136,12 +143,6 @@ type CallSync struct {
 	Raw       *signalpb.SyncMessage_CallEvent
 }
 
-// BlockChanges is who the user blocked or unblocked, either on another device or by a storage service update.
-type BlockChanges struct {
-	Blocked   []uuid.UUID
-	Unblocked []uuid.UUID
-}
-
 type ContactList struct {
 	Contacts []*types.Recipient
 	IsFromDB bool
@@ -180,3 +181,7 @@ type MessageRequestResponse struct {
 type QueueEmpty struct{}
 
 type LoggedOut struct{ Error error }
+
+type IdentityChange struct {
+	ServiceID libsignalgo.ServiceID
+}
