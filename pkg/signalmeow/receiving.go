@@ -821,8 +821,6 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 				})
 			}
 		}
-	case *signalpb.SyncMessage_Blocked_:
-		handlerSuccess = cli.handleBlockedSync(ctx, content.Blocked)
 	case *signalpb.SyncMessage_CallEvent_:
 		handlerSuccess = cli.handleEvent(&events.CallSync{
 			Timestamp: envelope.GetClientTimestamp(),
