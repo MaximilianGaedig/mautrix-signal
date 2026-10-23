@@ -28,8 +28,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
-	"go.mau.fi/mautrix-signal/pkg/msgconv"
 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
+	"go.mau.fi/mautrix-signal/pkg/msgconv"
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 )
 

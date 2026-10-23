@@ -41,10 +41,10 @@ type SignalClient struct {
 	Ghost     *bridgev2.Ghost
 
 	recentMessageRooms *exsync.RingBuffer[networkid.MessageID, networkid.PortalKey]
-	queueEmptyWaiter *exsync.Event
-	cancelChatSync   atomic.Pointer[context.CancelFunc]
-	callBridge       signalCallBridge
-	callLog          *callLogger
+	queueEmptyWaiter   *exsync.Event
+	cancelChatSync     atomic.Pointer[context.CancelFunc]
+	callBridge         signalCallBridge
+	callLog            *callLogger
 }
 
 var (
